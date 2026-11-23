@@ -1,0 +1,8 @@
+# Security Architecture
+
+- **Authoritative Express API Boundary**: React never queries PostgreSQL tables directly via Supabase Data API (`supabase.from(...)`). `@supabase/supabase-js` is used strictly for Authentication; all business reads and writes flow through Express (`/api/v1/*`) with `Authorization: Bearer <access_token>`.
+- **Cryptographic JWT Verification**: `server/shared/auth/supabaseAuth.ts` verifies asymmetric Supabase `ES256`/`RS256` JWTs against cached JWKS (`/auth/v1/.well-known/jwks.json` with automatic key-rotation refresh), supports `HS256` fallback when `SUPABASE_JWT_SECRET` is configured, validates token expiration and issuer, and enforces `emailVerified === true` and `INSTITUTIONAL_EMAIL_DOMAINS`.
+- **Bootstrap Super Admin Control**: `SUPER_ADMIN_BOOTSTRAP_EMAILS` grants initial `super_admin` privileges only on authenticated verification of matching emails. Database trigger `prevent_user_privilege_escalation` blocks non-admin modifications to `users.global_role` or `users.account_status`.
+- **Database Privilege Separation & RLS**: `campusverse_app` (`NOSUPERUSER`, `NOBYPASSRLS`) enforces Row-Level Security across all 17 tables using transaction-local `set_config(..., ..., true)`, isolating private student `registrations`, `notifications`, `finance_reports`, and restricting `audit_logs` to append-only (`SELECT, INSERT`).
+- **QR Privacy**: QR codes contain opaque random tokens (`CV-QR-...`) matched server-side via SHA-256 `qr_token_hash`, with zero embedded PII and never logged in `audit_logs`.
+- **Strict Demo Isolation**: `DemoDataAdapter` and `/api/v1/auth/demo-*` are permanently disabled when PostgreSQL is configured or `NODE_ENV === 'production'`.

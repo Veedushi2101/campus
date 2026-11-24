@@ -20,6 +20,7 @@ export function createAdminRoutes(adapter: DataAdapter): Router {
   router.get('/admin/dashboard', controller.dashboard);
   router.get('/admin/clubs', controller.clubs);
   router.patch('/admin/clubs/:clubId/status', validateBody(updateClubStatusSchema), controller.updateClubStatus);
+  router.get('/admin/memberships', controller.memberships);
   router.get('/admin/users', controller.users);
   router.patch('/admin/users/:userId/status', validateBody(updateUserStatusSchema), controller.updateUserStatus);
   router.get('/admin/reports', controller.reports);

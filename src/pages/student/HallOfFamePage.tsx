@@ -4,7 +4,7 @@ import {Award} from 'lucide-react';
 import {Link} from 'react-router-dom';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {Card} from '../../components/ui/FormControls.tsx';
-import {ClubLogo, LoadingSkeleton} from '../../components/ui/Feedback.tsx';
+import {ClubLogo, EmptyState, LoadingSkeleton} from '../../components/ui/Feedback.tsx';
 
 export const HallOfFamePage: React.FC = () => {
   const {data: entries = [], isLoading} = useQuery({
@@ -12,8 +12,8 @@ export const HallOfFamePage: React.FC = () => {
     queryFn: () => apiClient.getHallOfFame(),
   });
 
-  const topThree = entries.slice(0, 3);
-  const remaining = entries.slice(3);
+  const topThree = entries.filter((entry) => entry.rank <= 3);
+  const remaining = entries.filter((entry) => entry.rank > 3);
 
   return (
     <div className="space-y-8">
@@ -27,9 +27,15 @@ export const HallOfFamePage: React.FC = () => {
 
       {isLoading ? (
         <LoadingSkeleton rows={5} />
+      ) : entries.length === 0 ? (
+        <EmptyState
+          icon={<Award className="h-6 w-6" />}
+          title="No active clubs ranked yet"
+          description="Hall of Fame rankings appear automatically as active campus clubs publish events and receive student follows."
+        />
       ) : (
         <>
-          {/* Top 3 Podium Showcase */}
+          {/* Top 3 Podium Showcase (all clubs with rank <= 3 including ties) */}
           <div className="grid gap-5 md:grid-cols-3">
             {topThree.map((entry) => (
               <Card
@@ -77,51 +83,53 @@ export const HallOfFamePage: React.FC = () => {
           </div>
 
           {/* Remaining Clubs Ranking Table */}
-          <Card className="overflow-hidden">
-            <div className="border-b border-slate-200 px-6 py-4">
-              <h2 className="font-display text-base font-semibold text-slate-900">
-                Full Campus Standings
-              </h2>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500">
-                  <tr>
-                    <th className="px-6 py-3">Rank</th>
-                    <th className="px-6 py-3">Club</th>
-                    <th className="px-6 py-3">Category</th>
-                    <th className="px-6 py-3 text-right">Events Hosted</th>
-                    <th className="px-6 py-3 text-right">Followers</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {remaining.map((entry) => (
-                    <tr key={entry.club.id} className="hover:bg-slate-50/70">
-                      <td className="px-6 py-3.5 font-mono text-xs font-semibold text-slate-700 tabular-nums">
-                        #{entry.rank}
-                        {entry.tieCount > 1 ? ' (Tie)' : ''}
-                      </td>
-                      <td className="px-6 py-3.5">
-                        <Link
-                          to={`/app/student/clubs/${entry.club.id}`}
-                          className="font-medium text-slate-900 hover:text-violet-700"
-                        >
-                          {entry.club.name}
-                        </Link>
-                      </td>
-                      <td className="px-6 py-3.5 text-xs text-slate-600">{entry.club.category}</td>
-                      <td className="px-6 py-3.5 text-right font-mono text-xs text-slate-700 tabular-nums">
-                        {entry.eventsHosted}
-                      </td>
-                      <td className="px-6 py-3.5 text-right font-mono text-sm font-semibold text-slate-900 tabular-nums">
-                        {entry.followerCount}
-                      </td>
+          {remaining.length > 0 && (
+            <Card className="overflow-hidden">
+              <div className="border-b border-slate-200 px-6 py-4">
+                <h2 className="font-display text-base font-semibold text-slate-900">
+                  Full Campus Standings
+                </h2>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500">
+                    <tr>
+                      <th className="px-6 py-3">Rank</th>
+                      <th className="px-6 py-3">Club</th>
+                      <th className="px-6 py-3">Category</th>
+                      <th className="px-6 py-3 text-right">Events Hosted</th>
+                      <th className="px-6 py-3 text-right">Followers</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {remaining.map((entry) => (
+                      <tr key={entry.club.id} className="hover:bg-slate-50/70">
+                        <td className="px-6 py-3.5 font-mono text-xs font-semibold text-slate-700 tabular-nums">
+                          #{entry.rank}
+                          {entry.tieCount > 1 ? ' (Tie)' : ''}
+                        </td>
+                        <td className="px-6 py-3.5">
+                          <Link
+                            to={`/app/student/clubs/${entry.club.id}`}
+                            className="font-medium text-slate-900 hover:text-violet-700"
+                          >
+                            {entry.club.name}
+                          </Link>
+                        </td>
+                        <td className="px-6 py-3.5 text-xs text-slate-600">{entry.club.category}</td>
+                        <td className="px-6 py-3.5 text-right font-mono text-xs text-slate-700 tabular-nums">
+                          {entry.eventsHosted}
+                        </td>
+                        <td className="px-6 py-3.5 text-right font-mono text-sm font-semibold text-slate-900 tabular-nums">
+                          {entry.followerCount}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
         </>
       )}
     </div>

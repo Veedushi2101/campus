@@ -16,7 +16,10 @@ export class MembershipsController {
 
   follow = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const follow = await this.service.followClub(req.auth!.user.id, req.params.clubId);
+      const follow = await this.service.followClub(
+        {id: req.auth!.user.id, name: req.auth!.user.name},
+        req.params.clubId,
+      );
       sendSuccess(res, follow, 201);
     } catch (error) {
       next(error);
@@ -25,7 +28,10 @@ export class MembershipsController {
 
   unfollow = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      await this.service.unfollowClub(req.auth!.user.id, req.params.clubId);
+      await this.service.unfollowClub(
+        {id: req.auth!.user.id, name: req.auth!.user.name},
+        req.params.clubId,
+      );
       sendSuccess(res, {unfollowed: true});
     } catch (error) {
       next(error);
@@ -45,7 +51,11 @@ export class MembershipsController {
     try {
       const member = await this.service.upsertClubMember(
         req.params.clubId,
-        {id: req.auth!.user.id, name: req.auth!.user.name},
+        {
+          id: req.auth!.user.id,
+          name: req.auth!.user.name,
+          isSuperAdmin: req.auth!.user.isSuperAdmin,
+        },
         req.body,
       );
       sendSuccess(res, member, 201);
@@ -59,7 +69,11 @@ export class MembershipsController {
       const updated = await this.service.updateMemberPermissions(
         req.params.clubId,
         req.params.membershipId,
-        {id: req.auth!.user.id, name: req.auth!.user.name},
+        {
+          id: req.auth!.user.id,
+          name: req.auth!.user.name,
+          isSuperAdmin: req.auth!.user.isSuperAdmin,
+        },
         req.body,
       );
       sendSuccess(res, updated);
@@ -73,6 +87,7 @@ export class MembershipsController {
       await this.service.removeClubMember(req.params.clubId, req.params.membershipId, {
         id: req.auth!.user.id,
         name: req.auth!.user.name,
+        isSuperAdmin: req.auth!.user.isSuperAdmin,
       });
       sendSuccess(res, {removed: true});
     } catch (error) {

@@ -2,7 +2,7 @@ import type {CoreMemberPermission, ClubCategory, EventCategory} from '../constan
 export type {CoreMemberPermission, ClubCategory, EventCategory};
 
 export type AccountStatus = 'active' | 'suspended' | 'pending_verification';
-export type ClubStatus = 'active' | 'suspended' | 'pending_review';
+export type ClubStatus = 'active' | 'inactive' | 'suspended' | 'pending_review';
 export type ClubRole = 'club_admin' | 'core_member';
 export type EventStatus = 'draft' | 'published' | 'completed' | 'cancelled';
 export type RegistrationStatus = 'confirmed' | 'waitlisted' | 'cancelled' | 'attended';

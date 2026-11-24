@@ -1,6 +1,6 @@
-import React from 'react';
+import React, {useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
-import {ArrowLeft, Calendar, Mail, MapPin, UserMinus, UserPlus, Users} from 'lucide-react';
+import {AlertCircle, ArrowLeft, Calendar, Mail, MapPin, UserMinus, UserPlus, Users} from 'lucide-react';
 import {Link, useParams} from 'react-router-dom';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {Button} from '../../components/ui/Button.tsx';
@@ -14,6 +14,7 @@ export const ClubDetailsPage: React.FC = () => {
   const {followedClubIds, refreshSession} = useAuth();
   const {toast} = useToast();
   const queryClient = useQueryClient();
+  const [followError, setFollowError] = useState<string | null>(null);
 
   const {data: club, isLoading, error} = useQuery({
     queryKey: ['club', clubId],
@@ -24,20 +25,34 @@ export const ClubDetailsPage: React.FC = () => {
   const followMutation = useMutation({
     mutationFn: () => apiClient.followClub(club!.id),
     onSuccess: async () => {
+      setFollowError(null);
       await refreshSession();
-      await queryClient.invalidateQueries({queryKey: ['club', clubId]});
+      await Promise.all([
+        queryClient.invalidateQueries({queryKey: ['club', clubId]}),
+        queryClient.invalidateQueries({queryKey: ['clubs']}),
+        queryClient.invalidateQueries({queryKey: ['hall-of-fame']}),
+        queryClient.invalidateQueries({queryKey: ['followed-clubs']}),
+      ]);
       toast.success(`Now following ${club?.name}`);
     },
     onError: (err) => {
-      toast.error('Cannot follow club', err instanceof Error ? err.message : undefined);
+      const msg = err instanceof Error ? err.message : 'Unable to follow club';
+      setFollowError(msg);
+      toast.error('Cannot follow club', msg);
     },
   });
 
   const unfollowMutation = useMutation({
     mutationFn: () => apiClient.unfollowClub(club!.id),
     onSuccess: async () => {
+      setFollowError(null);
       await refreshSession();
-      await queryClient.invalidateQueries({queryKey: ['club', clubId]});
+      await Promise.all([
+        queryClient.invalidateQueries({queryKey: ['club', clubId]}),
+        queryClient.invalidateQueries({queryKey: ['clubs']}),
+        queryClient.invalidateQueries({queryKey: ['hall-of-fame']}),
+        queryClient.invalidateQueries({queryKey: ['followed-clubs']}),
+      ]);
       toast.info(`Unfollowed ${club?.name}`);
     },
     onError: (err) => {
@@ -68,6 +83,19 @@ export const ClubDetailsPage: React.FC = () => {
         <ArrowLeft className="h-3.5 w-3.5" />
         Back to Explore Clubs
       </Link>
+
+      {followError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+          <div>
+            <p className="font-semibold">Unable to follow club</p>
+            <p className="mt-0.5 text-amber-800">{followError}</p>
+          </div>
+        </div>
+      )}
 
       <Card className="p-6 sm:p-8">
         <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-start">

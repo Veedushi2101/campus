@@ -43,7 +43,9 @@ export interface ClientDataAdapter {
   logout(): Promise<void>;
 
   // Users
-  updateMyProfile(input: {name: string; department: string; yearOfStudy: string}): Promise<UserAccount>;
+  updateMyProfile(
+    input: Partial<{name: string; department: string; yearOfStudy: string}>,
+  ): Promise<UserAccount>;
 
   // Clubs & Follows
   listClubs(params?: {search?: string; category?: string; sortBy?: string}): Promise<Club[]>;
@@ -56,20 +58,32 @@ export interface ClientDataAdapter {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    status?: ClubStatus;
   }): Promise<Club>;
 
   getMyMemberships(): Promise<{memberships: ClubMembership[]; follows: ClubFollow[]}>;
+  getMyFollowedClubs(): Promise<Club[]>;
   followClub(clubId: string): Promise<ClubFollow>;
   unfollowClub(clubId: string): Promise<void>;
   getClubTeam(clubId: string): Promise<ClubMembership[]>;
   upsertClubMember(
     clubId: string,
-    input: {email: string; role: 'club_admin' | 'core_member'; title: string; permissions: CoreMemberPermission[]},
+    input: {
+      email?: string;
+      userId?: string;
+      role: 'club_admin' | 'core_member';
+      title: string;
+      permissions: CoreMemberPermission[];
+    },
   ): Promise<ClubMembership>;
   updateMemberPermissions(
     clubId: string,
     membershipId: string,
-    updates: {role?: 'club_admin' | 'core_member'; title?: string; permissions: CoreMemberPermission[]},
+    updates: {
+      role?: 'club_admin' | 'core_member';
+      title?: string;
+      permissions?: CoreMemberPermission[];
+    },
   ): Promise<ClubMembership>;
   removeClubMember(clubId: string, membershipId: string): Promise<void>;
 
@@ -149,6 +163,7 @@ export interface ClientDataAdapter {
   // Super Admin
   getAdminDashboard(): Promise<AdminDashboardStats>;
   listAdminClubs(): Promise<Club[]>;
+  listAdminMemberships(): Promise<ClubMembership[]>;
   updateClubStatus(clubId: string, status: ClubStatus, reason?: string): Promise<Club>;
   listAdminUsers(): Promise<UserAccount[]>;
   updateUserStatus(userId: string, status: 'active' | 'suspended', reason?: string): Promise<UserAccount>;

@@ -1,4 +1,12 @@
-import React, {createContext, useCallback, useContext, useEffect, useMemo, useState} from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {useQueryClient} from '@tanstack/react-query';
 import type {CoreMemberPermission} from '../../shared/constants/permissions.ts';
 import type {AuthSessionResponse, ClubMembership, UserAccount} from '../../shared/types/domain.ts';
@@ -69,9 +77,14 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
   const queryClient = useQueryClient();
   const [authConfig, setAuthConfig] = useState<PublicAuthConfig | null>(null);
   const [session, setSession] = useState<AuthSessionResponse | null>(null);
+  const sessionRef = useRef<AuthSessionResponse | null>(null);
   const [activeContext, setActiveContext] = useState<WorkspaceContextType>('student');
   const [activeClubId, setActiveClubId] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState<boolean>(true);
+
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
 
   const isDemoMode = authConfig ? authConfig.demoModeEnabled : false;
 
@@ -82,6 +95,7 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
 
   const applyNewSession = useCallback((token: string, nextSession: AuthSessionResponse) => {
     apiClient.setAuthToken(token);
+    sessionRef.current = nextSession;
     setSession(nextSession);
     const defaults = deriveDefaultContext(nextSession);
     setActiveContext(defaults.context);
@@ -93,32 +107,54 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
     async (accessToken: string): Promise<WorkspaceContextType> => {
       apiClient.setAuthToken(accessToken);
       const me = await apiClient.getMe();
+      const hadSession = Boolean(sessionRef.current);
+      sessionRef.current = me;
       setSession(me);
       const defaults = deriveDefaultContext(me);
-      setActiveContext((prev) => (session ? prev : defaults.context));
-      setActiveClubId((prev) => (session ? prev : defaults.clubId));
+      if (!hadSession) {
+        setActiveContext(defaults.context);
+        setActiveClubId(defaults.clubId);
+      }
       return defaults.context;
     },
-    [session],
+    [],
   );
 
   useEffect(() => {
     let active = true;
     async function init() {
+      let cfg: PublicAuthConfig;
       try {
-        const cfg = await apiClient.getAuthConfig();
-        if (!active) return;
-        setAuthConfig(cfg);
+        cfg = await apiClient.getAuthConfig();
       } catch {
-        if (!active) return;
-        setAuthConfig({
+        cfg = {
           mode: 'supabase',
           persistenceMode: 'postgres',
           demoModeEnabled: false,
           supabaseUrl: import.meta.env.VITE_SUPABASE_URL || null,
           supabasePublishableKey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || null,
           institutionalEmailDomains: [],
-        });
+        };
+      }
+      if (!active) return;
+      setAuthConfig(cfg);
+
+      const client = getSupabaseClient(cfg.supabaseUrl, cfg.supabasePublishableKey);
+      if (cfg.demoModeEnabled || !client) {
+        setIsInitializing(false);
+        return;
+      }
+
+      try {
+        const {data} = await client.auth.getSession();
+        if (!active) return;
+        if (data.session?.access_token) {
+          await hydrateFromSupabaseToken(data.session.access_token).catch(() => {
+            apiClient.setAuthToken(null);
+            sessionRef.current = null;
+            setSession(null);
+          });
+        }
       } finally {
         if (active) setIsInitializing(false);
       }
@@ -127,31 +163,24 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [hydrateFromSupabaseToken]);
 
   useEffect(() => {
     if (!supabase || isDemoMode) return;
     let mounted = true;
 
-    void supabase.auth.getSession().then(({data}) => {
-      if (!mounted || !data.session?.access_token) return;
-      void hydrateFromSupabaseToken(data.session.access_token).catch(() => {
-        apiClient.setAuthToken(null);
-        setSession(null);
-      });
-    });
-
     const {data: subscription} = supabase.auth.onAuthStateChange((_event, nextSbSession) => {
       if (!mounted) return;
       if (!nextSbSession?.access_token) {
         apiClient.setAuthToken(null);
+        sessionRef.current = null;
         setSession(null);
         queryClient.clear();
         return;
       }
       void hydrateFromSupabaseToken(nextSbSession.access_token).catch(() => {
-        // User may not have verified email yet
         apiClient.setAuthToken(null);
+        sessionRef.current = null;
         setSession(null);
       });
     });
@@ -279,8 +308,14 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
 
   const refreshSession = useCallback(async () => {
     const next = await apiClient.getMe();
+    sessionRef.current = next;
     setSession(next);
-  }, []);
+    if (activeClubId && !next.memberships.some((m) => m.clubId === activeClubId)) {
+      const defaults = deriveDefaultContext(next);
+      setActiveContext(defaults.context);
+      setActiveClubId(defaults.clubId);
+    }
+  }, [activeClubId]);
 
   const logout = useCallback(async () => {
     try {

@@ -38,6 +38,16 @@ export function isUuid(value: string | undefined | null): value is string {
   return Boolean(value && UUID_REGEX.test(value.trim()));
 }
 
+export function getPgErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const errObj = error as {code?: string; cause?: {code?: string}};
+  return errObj.code || errObj.cause?.code;
+}
+
+export function isPgUniqueViolation(error: unknown): boolean {
+  return getPgErrorCode(error) === '23505';
+}
+
 export function slugify(value: string): string {
   return value
     .toLowerCase()
@@ -76,7 +86,12 @@ export function fromCentsToNumber(cents: number): number {
 
 export function normalizeClubStatus(status: string): ClubStatus {
   if (status === 'pending') return 'pending_review';
-  if (status === 'active' || status === 'suspended' || status === 'pending_review') {
+  if (
+    status === 'active' ||
+    status === 'inactive' ||
+    status === 'suspended' ||
+    status === 'pending_review'
+  ) {
     return status;
   }
   return 'pending_review';

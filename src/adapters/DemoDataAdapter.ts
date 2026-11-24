@@ -88,7 +88,7 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     this.currentUserId = 'usr-student-1';
   }
 
-  async updateMyProfile(input: {name: string; department: string; yearOfStudy: string}) {
+  async updateMyProfile(input: Partial<{name: string; department: string; yearOfStudy: string}>) {
     return (await this.store.updateUserProfile(this.currentUserId, input))!;
   }
 
@@ -111,8 +111,9 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    status?: ClubStatus;
   }) {
-    return this.store.createClub(input);
+    return this.store.createClub({...input, createdByUserId: this.currentUserId});
   }
 
   async getMyMemberships() {
@@ -120,6 +121,15 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
       memberships: await this.store.getMembershipsForUser(this.currentUserId),
       follows: await this.store.getFollowsForUser(this.currentUserId),
     };
+  }
+
+  async getMyFollowedClubs(): Promise<Club[]> {
+    const [follows, activeClubs] = await Promise.all([
+      this.store.getFollowsForUser(this.currentUserId),
+      this.store.listClubs(),
+    ]);
+    const followedSet = new Set(follows.map((f) => f.clubId));
+    return activeClubs.filter((club) => followedSet.has(club.id));
   }
 
   followClub(clubId: string) {
@@ -136,9 +146,19 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
 
   async upsertClubMember(
     clubId: string,
-    input: {email: string; role: 'club_admin' | 'core_member'; title: string; permissions: CoreMemberPermission[]},
+    input: {
+      email?: string;
+      userId?: string;
+      role: 'club_admin' | 'core_member';
+      title: string;
+      permissions: CoreMemberPermission[];
+    },
   ) {
-    const user = await this.store.getUserByEmail(input.email);
+    const user = input.userId
+      ? await this.store.getUserById(input.userId)
+      : input.email
+        ? await this.store.getUserByEmail(input.email)
+        : null;
     if (!user) throw new Error('User not found');
     return this.store.upsertClubMembership({
       clubId,
@@ -146,13 +166,19 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
       role: input.role,
       title: input.title,
       permissions: input.permissions,
+      assignedByUserId: this.currentUserId,
+      strictInsert: true,
     });
   }
 
   async updateMemberPermissions(
     clubId: string,
     membershipId: string,
-    updates: {role?: 'club_admin' | 'core_member'; title?: string; permissions: CoreMemberPermission[]},
+    updates: {
+      role?: 'club_admin' | 'core_member';
+      title?: string;
+      permissions?: CoreMemberPermission[];
+    },
   ) {
     return (await this.store.updateMembershipPermissions(clubId, membershipId, updates))!;
   }
@@ -333,6 +359,10 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
 
   listAdminClubs() {
     return this.store.listClubs({includeAllStatuses: true});
+  }
+
+  listAdminMemberships() {
+    return this.store.listAllMemberships();
   }
 
   async updateClubStatus(clubId: string, status: ClubStatus) {

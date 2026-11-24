@@ -2,7 +2,7 @@
 
 Centralized college clubs, events, registrations, single-use QR attendance, and institutional reporting platform.
 
-> **Phase 2 Status**: Production PostgreSQL persistence (`PostgresDataAdapter` + Drizzle ORM across 17 normalized tables), database privilege separation (`campusverse_app` with Row-Level Security), pessimistic transactional locking for concurrency invariants, and Supabase Auth JWT verification (`ES256`/`RS256` JWKS + institutional email domain checks) are implemented and verified.
+> **Phase 3 Status**: Real database-backed User Profiles, Club Management (`active` / `inactive` / `suspended` / `pending_review`), Multi-Club Memberships & Scoped Permissions, 2-Club Following with `FOR UPDATE` concurrency locks, and live Hall of Fame rankings with tie-handling are implemented on Supabase PostgreSQL + Drizzle ORM + RLS + Express API (`/api/v1/*`). Event workflows & attendance ledger remain preserved from Phases 1–2 ahead of Phase 4.
 
 ---
 

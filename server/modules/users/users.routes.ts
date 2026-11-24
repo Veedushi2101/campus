@@ -1,5 +1,5 @@
 import {Router} from 'express';
-import {updateProfileSchema} from '../../../shared/schemas/validation.ts';
+import {patchProfileSchema} from '../../../shared/schemas/validation.ts';
 import type {DataAdapter} from '../../adapters/DataAdapter.ts';
 import {requireAuth} from '../../middleware/authorization.ts';
 import {validateBody} from '../../middleware/validation.ts';
@@ -12,7 +12,8 @@ export function createUsersRoutes(adapter: DataAdapter): Router {
   const controller = new UsersController(service);
 
   router.get('/users/me', requireAuth, controller.getMe);
-  router.patch('/users/me', requireAuth, validateBody(updateProfileSchema), controller.updateMe);
+  router.patch('/users/me', requireAuth, validateBody(patchProfileSchema), controller.updateMe);
+  router.get('/users/me/followed-clubs', requireAuth, controller.getFollowedClubs);
 
   return router;
 }

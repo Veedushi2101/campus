@@ -18,8 +18,15 @@ export class AdminService {
     return this.adapter.getAdminDashboardStats();
   }
 
-  async listAllClubs(): Promise<Club[]> {
-    return this.adapter.listClubs({includeAllStatuses: true});
+  async listAllClubs(status?: ClubStatus): Promise<Club[]> {
+    return this.adapter.listClubs({
+      status,
+      includeAllStatuses: !status,
+    });
+  }
+
+  async listAllMemberships() {
+    return this.adapter.listAllMemberships();
   }
 
   async updateClubStatus(

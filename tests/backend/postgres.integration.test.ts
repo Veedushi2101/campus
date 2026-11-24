@@ -26,15 +26,18 @@ describe.skipIf(!hasLiveDatabase)(
       if (migrationUrl) {
         const {client} = createDbPool(migrationUrl, 1);
         try {
-          for (const clubId of createdClubIds) {
-            await client`DELETE FROM public.clubs WHERE id = ${clubId}`;
-          }
-          for (const userId of createdUserIds) {
-            await client`DELETE FROM public.users WHERE id = ${userId}`;
-          }
-          for (const auditId of createdAuditIds) {
-            await client`DELETE FROM public.audit_logs WHERE id = ${auditId}`;
-          }
+          await client.begin(async (tx) => {
+            await tx`SELECT set_config('app.current_global_role', 'super_admin', true)`;
+            for (const clubId of createdClubIds) {
+              await tx`DELETE FROM public.clubs WHERE id = ${clubId}`;
+            }
+            for (const userId of createdUserIds) {
+              await tx`DELETE FROM public.users WHERE id = ${userId}`;
+            }
+            for (const auditId of createdAuditIds) {
+              await tx`DELETE FROM public.audit_logs WHERE id = ${auditId}`;
+            }
+          });
         } finally {
           await client.end({timeout: 5});
         }
@@ -347,6 +350,224 @@ describe.skipIf(!hasLiveDatabase)(
       );
         const planText = explainRows.map((r) => r['QUERY PLAN']).join('\n');
         expect(planText).toContain('Execution Time');
+      },
+      25000,
+    );
+
+    it(
+      'Phase 3: persists profiles, concurrent 2-club follows, inactive clubs, strict membership conflicts, live Hall of Fame ties, and RLS/trigger enforcement',
+      async () => {
+        const adapter = new PostgresDataAdapter();
+        const client = getSqlClient();
+
+        // Provision test student, club admin candidate, and super admin
+        const student = await adapter.provisionAuthenticatedUser({
+          authUserId: crypto.randomUUID(),
+          email: `p3.student.${testRunSuffix}@vitbhopal.ac.in`,
+          name: 'Phase3 Student',
+          emailVerified: true,
+          isBootstrapSuperAdmin: false,
+        });
+        const leader = await adapter.provisionAuthenticatedUser({
+          authUserId: crypto.randomUUID(),
+          email: `p3.leader.${testRunSuffix}@vitbhopal.ac.in`,
+          name: 'Phase3 Leader',
+          emailVerified: true,
+          isBootstrapSuperAdmin: false,
+        });
+        const followerExtra = await adapter.provisionAuthenticatedUser({
+          authUserId: crypto.randomUUID(),
+          email: `p3.extra.${testRunSuffix}@vitbhopal.ac.in`,
+          name: 'Phase3 Extra Follower',
+          emailVerified: true,
+          isBootstrapSuperAdmin: false,
+        });
+        createdUserIds.push(student.id, leader.id, followerExtra.id);
+
+        // 1. Profile update persistence
+        const updatedProfile = await dbRequestContext.run(
+          {userId: student.id, globalRole: 'user'},
+          () =>
+            adapter.updateUserProfile(student.id, {
+              name: 'Phase3 Updated Student',
+              department: 'Aerospace Engineering',
+              yearOfStudy: 'Year 4',
+            }),
+        );
+        expect(updatedProfile?.name).toBe('Phase3 Updated Student');
+        expect(updatedProfile?.department).toBe('Aerospace Engineering');
+
+        // Unauthenticated RLS check: public role cannot read users table
+        await client.begin(async (tx) => {
+          await tx.unsafe(`SET LOCAL ROLE campusverse_app`);
+          await tx`SELECT set_config('app.current_user_id', '', true), set_config('app.current_global_role', 'public', true)`;
+          const publicUsers = await tx`SELECT id FROM public.users`;
+          expect(publicUsers).toHaveLength(0);
+        });
+
+        // 2. Create 3 active clubs + 1 inactive club
+        const [clubA, clubB, clubC, inactiveClub] = await dbRequestContext.run(
+          {userId: '', globalRole: 'super_admin'},
+          async () => {
+            const a = await adapter.createClub({
+              name: `P3 Alpha ${testRunSuffix}`,
+              category: 'Technology',
+              tagline: 'Phase 3 test club Alpha for ranking & follow checks.',
+              description: 'Automated integration test club Alpha with persistent DB storage.',
+              meetingSchedule: 'Mon 17:00',
+              contactEmail: `alpha.${testRunSuffix}@vitbhopal.ac.in`,
+              status: 'active',
+            });
+            const b = await adapter.createClub({
+              name: `P3 Beta ${testRunSuffix}`,
+              category: 'Design',
+              tagline: 'Phase 3 test club Beta for ranking & follow checks.',
+              description: 'Automated integration test club Beta with persistent DB storage.',
+              meetingSchedule: 'Tue 17:00',
+              contactEmail: `beta.${testRunSuffix}@vitbhopal.ac.in`,
+              status: 'active',
+            });
+            const c = await adapter.createClub({
+              name: `P3 Gamma ${testRunSuffix}`,
+              category: 'Robotics & Hardware',
+              tagline: 'Phase 3 test club Gamma for ranking & follow checks.',
+              description: 'Automated integration test club Gamma with persistent DB storage.',
+              meetingSchedule: 'Wed 17:00',
+              contactEmail: `gamma.${testRunSuffix}@vitbhopal.ac.in`,
+              status: 'active',
+            });
+            const d = await adapter.createClub({
+              name: `P3 Inactive ${testRunSuffix}`,
+              category: 'Social Impact',
+              tagline: 'Phase 3 inactive test club excluded from student discovery.',
+              description: 'Automated integration test inactive club for visibility checks.',
+              meetingSchedule: 'Thu 17:00',
+              contactEmail: `inactive.${testRunSuffix}@vitbhopal.ac.in`,
+              status: 'inactive',
+            });
+            return [a, b, c, d];
+          },
+        );
+        createdClubIds.push(clubA.id, clubB.id, clubC.id, inactiveClub.id);
+
+        // Inactive club hidden from public listClubs, student getClubDetail, Hall of Fame, and followClub
+        const publicClubs = await adapter.listClubs();
+        expect(publicClubs.some((c) => c.id === inactiveClub.id)).toBe(false);
+        const hiddenDetail = await dbRequestContext.run(
+          {userId: student.id, globalRole: 'user'},
+          () => adapter.getClubDetail(inactiveClub.id, student.id),
+        );
+        expect(hiddenDetail).toBeNull();
+        const superDetail = await dbRequestContext.run(
+          {userId: '', globalRole: 'super_admin'},
+          () => adapter.getClubDetail(inactiveClub.id),
+        );
+        expect(superDetail?.status).toBe('inactive');
+
+        await expect(
+          dbRequestContext.run({userId: student.id, globalRole: 'user'}, () =>
+            adapter.followClub(student.id, inactiveClub.id),
+          ),
+        ).rejects.toMatchObject({code: 'CLUB_NOT_ACTIVE', statusCode: 422});
+
+        // 3. Concurrent 3-way follow from 0 follows -> strictly 2 succeed, 1 fails with MAX_CLUB_FOLLOW_LIMIT_REACHED
+        const threeFollows = await Promise.allSettled([
+          dbRequestContext.run({userId: student.id, globalRole: 'user'}, () =>
+            adapter.followClub(student.id, clubA.id),
+          ),
+          dbRequestContext.run({userId: student.id, globalRole: 'user'}, () =>
+            adapter.followClub(student.id, clubB.id),
+          ),
+          dbRequestContext.run({userId: student.id, globalRole: 'user'}, () =>
+            adapter.followClub(student.id, clubC.id),
+          ),
+        ]);
+        expect(threeFollows.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
+        const rejected = threeFollows.filter((r) => r.status === 'rejected');
+        expect(rejected).toHaveLength(1);
+        expect((rejected[0] as PromiseRejectedResult).reason.code).toBe(
+          'MAX_CLUB_FOLLOW_LIMIT_REACHED',
+        );
+
+        const studentFollows = await dbRequestContext.run(
+          {userId: student.id, globalRole: 'user'},
+          () => adapter.getFollowsForUser(student.id),
+        );
+        expect(studentFollows).toHaveLength(2);
+        const expectedClubAFollows =
+          (studentFollows.some((f) => f.clubId === clubA.id) ? 1 : 0) + 1;
+
+        // Follower counts on live Hall of Fame reflect real follows and exclude inactiveClub
+        await dbRequestContext.run({userId: followerExtra.id, globalRole: 'user'}, () =>
+          adapter.followClub(followerExtra.id, clubA.id),
+        );
+        const hof = await adapter.getHallOfFame();
+        expect(hof.some((e) => e.club.id === inactiveClub.id)).toBe(false);
+        const hofClubA = hof.find((e) => e.club.id === clubA.id);
+        expect(hofClubA?.followerCount).toBe(expectedClubAFollows);
+
+        // Verify unfollowing clubA decrements followerCount back by 1 for followerExtra
+        await dbRequestContext.run({userId: followerExtra.id, globalRole: 'user'}, () =>
+          adapter.unfollowClub(followerExtra.id, clubA.id),
+        );
+        const hofAfterUnfollow = await adapter.getHallOfFame();
+        const hofClubAAfter = hofAfterUnfollow.find((e) => e.club.id === clubA.id);
+        expect(hofClubAAfter?.followerCount).toBe(expectedClubAFollows - 1);
+
+        // 4. Concurrent strictInsert duplicate membership -> 1 succeeds, 1 throws 409 Conflict
+        const dupMemResults = await Promise.allSettled([
+          dbRequestContext.run({userId: '', globalRole: 'super_admin'}, () =>
+            adapter.upsertClubMembership({
+              clubId: clubA.id,
+              userId: leader.id,
+              role: 'club_admin',
+              title: 'President',
+              permissions: ['MANAGE_EVENTS', 'VIEW_REGISTRATIONS'],
+              strictInsert: true,
+            }),
+          ),
+          dbRequestContext.run({userId: '', globalRole: 'super_admin'}, () =>
+            adapter.upsertClubMembership({
+              clubId: clubA.id,
+              userId: leader.id,
+              role: 'club_admin',
+              title: 'President',
+              permissions: ['MANAGE_EVENTS', 'VIEW_REGISTRATIONS'],
+              strictInsert: true,
+            }),
+          ),
+        ]);
+        expect(dupMemResults.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+        const memErr = dupMemResults.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+        expect(memErr.reason.statusCode).toBe(409);
+
+        // 5. DB trigger blocks non-Super-Admin from modifying clubs.status, clubs.follower_count, or club_admin memberships
+        await expect(
+          client.begin(async (tx) => {
+            await tx.unsafe(`SET LOCAL ROLE campusverse_app`);
+            await tx`SELECT set_config('app.current_user_id', ${leader.id}, true), set_config('app.current_global_role', 'user', true)`;
+            await tx`UPDATE public.clubs SET status = 'inactive' WHERE id = ${clubA.id}`;
+          }),
+        ).rejects.toThrow(/only Super Admin can modify club status/i);
+
+        await expect(
+          client.begin(async (tx) => {
+            await tx.unsafe(`SET LOCAL ROLE campusverse_app`);
+            await tx`SELECT set_config('app.current_user_id', ${leader.id}, true), set_config('app.current_global_role', 'user', true)`;
+            await tx`UPDATE public.clubs SET follower_count = 9999 WHERE id = ${clubA.id}`;
+          }),
+        ).rejects.toThrow(/follower_count is maintained transactionally/i);
+
+        await expect(
+          client.begin(async (tx) => {
+            await tx.unsafe(`SET LOCAL ROLE campusverse_app`);
+            await tx`SELECT set_config('app.current_user_id', ${leader.id}, true), set_config('app.current_global_role', 'user', true)`;
+            await tx`
+              INSERT INTO public.club_memberships (user_id, club_id, membership_role, title, permissions)
+              VALUES (${student.id}, ${clubA.id}, 'club_admin', 'Rogue Admin', '[]'::jsonb)
+            `;
+          }),
+        ).rejects.toThrow(/only Super Admin can assign Club Admin memberships/i);
       },
       25000,
     );

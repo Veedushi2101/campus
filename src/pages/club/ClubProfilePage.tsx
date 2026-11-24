@@ -15,7 +15,7 @@ import {useToast} from '../../context/ToastContext.tsx';
 type ClubProfileForm = z.infer<typeof updateClubSchema>;
 
 export const ClubProfilePage: React.FC = () => {
-  const {activeClubId} = useAuth();
+  const {activeClubId, refreshSession} = useAuth();
   const {toast} = useToast();
   const queryClient = useQueryClient();
 
@@ -46,8 +46,12 @@ export const ClubProfilePage: React.FC = () => {
   const updateMutation = useMutation({
     mutationFn: (values: ClubProfileForm) => apiClient.updateClub(activeClubId!, values),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({queryKey: ['club', activeClubId]});
-      await queryClient.invalidateQueries({queryKey: ['clubs']});
+      await Promise.all([
+        refreshSession(),
+        queryClient.invalidateQueries({queryKey: ['club', activeClubId]}),
+        queryClient.invalidateQueries({queryKey: ['clubs']}),
+        queryClient.invalidateQueries({queryKey: ['hall-of-fame']}),
+      ]);
       toast.success('Club profile updated');
     },
     onError: (err) => {

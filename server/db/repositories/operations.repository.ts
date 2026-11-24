@@ -30,6 +30,7 @@ import {
   fromCentsToFixed,
   fromCentsToNumber,
   hashSha256,
+  isPgUniqueViolation,
   isUuid,
   mapAuditLogRow,
   mapEventReportRow,
@@ -137,7 +138,7 @@ export class OperationsRepository {
           qrUsedAt: null,
         });
       } catch (err: unknown) {
-        if ((err as {code?: string})?.code === '23505') {
+        if (isPgUniqueViolation(err)) {
           throw new ConflictError('You are already registered for this event');
         }
         throw err;
@@ -370,7 +371,7 @@ export class OperationsRepository {
           checkedInAt: inserted.scannedAt.toISOString(),
         };
       } catch (err: unknown) {
-        if ((err as {code?: string})?.code === '23505') {
+        if (isPgUniqueViolation(err)) {
           throw new ConflictError(
             `Duplicate scan prevented: ${input.studentName} is already checked in`,
           );
@@ -786,9 +787,9 @@ export class OperationsRepository {
             ? val.allowStudentEventFeedback
             : true,
         phaseLabel:
-          typeof val.phaseLabel === 'string'
+          typeof val.phaseLabel === 'string' && !val.phaseLabel.startsWith('Phase 2')
             ? val.phaseLabel
-            : 'Phase 2 — Production PostgreSQL & Supabase Auth',
+            : 'Phase 3 — Live Users, Clubs, Memberships & Hall of Fame',
         persistenceMode: 'postgres',
       };
     });

@@ -5,9 +5,9 @@ CampusVerse uses **17 normalized PostgreSQL tables** defined in `server/db/schem
 ## 17-Table Schema Inventory
 
 1. `users` — Institutional user accounts linked 1:1 to Supabase Auth (`auth_user_id`), normalized email, global role (`user` | `super_admin`), status, and verification timestamp.
-2. `clubs` — Student organizations with unique `slug`, category, status (`pending` | `pending_review` | `active` | `suspended`), and trigger-maintained `follower_count`.
-3. `club_memberships` — Non-mutually-exclusive per-club leadership (`club_admin` | `core_member`) and JSONB delegated permissions.
-4. `club_follows` — Student follow edges (`UNIQUE(user_id, club_id)`); capped at 2 clubs per student using a pessimistic `FOR UPDATE` row lock on `users`.
+2. `clubs` — Student organizations with unique `slug`, category, status (`pending` | `pending_review` | `active` | `inactive` | `suspended`), indexed `(status, follower_count)`, and trigger-maintained `follower_count`.
+3. `club_memberships` — Non-mutually-exclusive per-club leadership (`club_admin` | `core_member`), JSONB delegated permissions, and `assigned_by` audit foreign key.
+4. `club_follows` — Student follow edges (`UNIQUE(user_id, club_id)`); capped at 2 active-club follows per student using a pessimistic `FOR UPDATE` row lock on `users` in both follow and unfollow transactions.
 5. `events` — Club-hosted events with venue, schedule checks (`ends_at > starts_at`), capacity (`> 0`), fixed-point `numeric(10,2)` fee, and trigger-maintained `registered_count`.
 6. `event_forms` — Versioned registration form container per event (`UNIQUE(event_id)`).
 7. `form_fields` — Ordered fields per form (`UNIQUE(form_id, field_key)`).
@@ -27,9 +27,11 @@ CampusVerse uses **17 normalized PostgreSQL tables** defined in `server/db/schem
 - **Migration Role (`DATABASE_MIGRATION_URL`)**: Used exclusively by `drizzle-kit`, `server/db/applyRls.ts`, `server/db/seed.ts`, and `server/db/status.ts`.
 - **Runtime Role (`campusverse_app` via `DATABASE_URL`)**: Configured with `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`, `NOINHERIT`, `NOBYPASSRLS`, `NOREPLICATION`. Granted `SELECT, INSERT` only on `audit_logs` (no `UPDATE`/`DELETE`/`TRUNCATE`).
 - **Transaction-Scoped Identity**: Every `withRlsTransaction` call executes parameterized `set_config('app.current_user_id', ..., true)` and `set_config('app.current_global_role', ..., true)` so identity never leaks across pooled Supavisor connections (`prepare: false`).
+- **Narrow `SECURITY DEFINER` Helpers**: `app_is_club_admin`, `app_is_club_member`, `app_has_club_permission`, `get_public_club_member_counts`, `get_live_club_follow_counts`, and `get_public_club_team` avoid RLS policy recursion and prevent unauthenticated/public exposure of `users.email` or `club_follows.user_id`.
 
 ## Concurrency & Integrity Guarantees
 
-- **2-Club Follow Limit**: Locks `users` row `FOR UPDATE`, verifies `COUNT(*) < 2`, inserts into `club_follows`; trigger `sync_club_follower_count` (`SECURITY DEFINER`) updates `clubs.follower_count`.
+- **2-Club Follow Limit**: Locks `users` row `FOR UPDATE`, verifies club status is `active`, checks `COUNT(*) < 2`, inserts into `club_follows`; trigger `sync_club_follower_count` (`SECURITY DEFINER`) updates `clubs.follower_count`, while `prevent_club_privilege_escalation` blocks direct non-admin tampering with `clubs.status` or `clubs.follower_count`.
+- **Membership Escalation Guard**: Trigger `prevent_club_admin_membership_escalation` blocks non-Super-Admin SQL sessions from inserting, modifying, or deleting `club_admin` rows in `club_memberships`.
 - **Capacity & Waitlist Ordering**: Locks `events` row `FOR UPDATE`, counts `confirmed` + `attended` registrations, assigns `confirmed` or `waitlisted`; trigger `sync_event_registered_count` updates `events.registered_count`.
 - **Single-Use QR Attendance**: Locks `registrations` row `FOR UPDATE`, checks `attendance_records`, and relies on `UNIQUE(registration_id)` so concurrent gate scans yield `201` for the first scan and `409 Conflict` for any duplicate scan.

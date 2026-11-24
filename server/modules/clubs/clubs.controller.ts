@@ -45,8 +45,26 @@ export class ClubsController {
     try {
       const updated = await this.service.updateClub(
         req.params.clubId,
-        {id: req.auth!.user.id, name: req.auth!.user.name},
+        {
+          id: req.auth!.user.id,
+          name: req.auth!.user.name,
+          isSuperAdmin: req.auth!.user.isSuperAdmin,
+        },
         req.body,
+      );
+      sendSuccess(res, updated);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  updateStatus = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const updated = await this.service.updateClubStatus(
+        req.params.clubId,
+        req.body.status,
+        {id: req.auth!.user.id, name: req.auth!.user.name},
+        req.body.reason,
       );
       sendSuccess(res, updated);
     } catch (error) {

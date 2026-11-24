@@ -61,6 +61,22 @@ AS $$
   );
 $$;
 
+CREATE OR REPLACE FUNCTION public.app_is_club_member(target_club_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.club_memberships cm
+    WHERE cm.user_id = public.app_current_user_id()
+      AND cm.club_id = target_club_id
+      AND cm.status = 'active'
+  );
+$$;
+
 CREATE OR REPLACE FUNCTION public.app_has_club_permission(target_club_id uuid, perm text)
 RETURNS boolean
 LANGUAGE sql
@@ -81,13 +97,99 @@ AS $$
   );
 $$;
 
+-- Narrow read-only helpers (no user email or student_id exposed)
+CREATE OR REPLACE FUNCTION public.get_public_club_member_counts()
+RETURNS TABLE(club_id uuid, member_count integer)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT cm.club_id, count(*)::int AS member_count
+  FROM public.club_memberships cm
+  JOIN public.clubs c ON c.id = cm.club_id
+  WHERE cm.status = 'active'
+    AND c.status = 'active'
+  GROUP BY cm.club_id;
+$$;
+
+CREATE OR REPLACE FUNCTION public.get_live_club_follow_counts()
+RETURNS TABLE(club_id uuid, follower_count integer)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT cf.club_id, count(*)::int AS follower_count
+  FROM public.club_follows cf
+  GROUP BY cf.club_id;
+$$;
+
+CREATE OR REPLACE FUNCTION public.get_public_club_team(p_club_id uuid)
+RETURNS TABLE(
+  id uuid,
+  user_id uuid,
+  user_name text,
+  club_id uuid,
+  membership_role text,
+  title text,
+  permissions jsonb,
+  assigned_tasks jsonb,
+  created_at timestamptz
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT
+    cm.id,
+    cm.user_id,
+    u.display_name AS user_name,
+    cm.club_id,
+    cm.membership_role,
+    cm.title,
+    cm.permissions,
+    cm.assigned_tasks,
+    cm.created_at
+  FROM public.club_memberships cm
+  JOIN public.users u ON u.id = cm.user_id
+  JOIN public.clubs c ON c.id = cm.club_id
+  WHERE cm.club_id = p_club_id
+    AND cm.status = 'active'
+    AND (
+      c.status = 'active'
+      OR public.app_is_system_auth()
+      OR EXISTS (
+        SELECT 1 FROM public.club_memberships self_cm
+        WHERE self_cm.club_id = p_club_id
+          AND self_cm.user_id = public.app_current_user_id()
+          AND self_cm.status = 'active'
+      )
+    )
+  ORDER BY (cm.membership_role = 'club_admin') DESC, cm.created_at ASC;
+$$;
+
+CREATE OR REPLACE FUNCTION public.get_club_follow_target(p_club_id_or_slug text)
+RETURNS TABLE(id uuid, name text, status text)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT c.id, c.name, c.status
+  FROM public.clubs c
+  WHERE (c.id::text = p_club_id_or_slug OR c.slug = p_club_id_or_slug)
+  LIMIT 1;
+$$;
+
 -- 2. Database-level privilege escalation protection on users table
 CREATE OR REPLACE FUNCTION public.prevent_user_privilege_escalation()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF public.app_current_global_role() NOT IN ('super_admin', 'system_seed', 'auth_resolver', 'public') THEN
+  IF public.app_current_global_role() NOT IN ('super_admin', 'system_seed', 'auth_resolver') THEN
     IF NEW.global_role IS DISTINCT FROM OLD.global_role OR NEW.account_status IS DISTINCT FROM OLD.account_status THEN
       RAISE EXCEPTION 'Privilege escalation denied: users cannot modify global_role or account_status';
     END IF;
@@ -101,6 +203,58 @@ CREATE TRIGGER trg_prevent_user_privilege_escalation
 BEFORE UPDATE ON public.users
 FOR EACH ROW
 EXECUTE FUNCTION public.prevent_user_privilege_escalation();
+
+-- 2b. Database-level status & follower_count protection on clubs table
+CREATE OR REPLACE FUNCTION public.prevent_club_privilege_escalation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF public.app_current_global_role() NOT IN ('super_admin', 'system_seed') THEN
+    IF NEW.status IS DISTINCT FROM OLD.status THEN
+      RAISE EXCEPTION 'Privilege escalation denied: only Super Admin can modify club status';
+    END IF;
+    IF NEW.follower_count IS DISTINCT FROM OLD.follower_count AND pg_trigger_depth() <= 1 THEN
+      RAISE EXCEPTION 'Integrity violation: follower_count is maintained transactionally';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_prevent_club_privilege_escalation ON public.clubs;
+CREATE TRIGGER trg_prevent_club_privilege_escalation
+BEFORE UPDATE ON public.clubs
+FOR EACH ROW
+EXECUTE FUNCTION public.prevent_club_privilege_escalation();
+
+-- 2c. Database-level Club Admin membership protection (only Super Admin can assign/modify/remove club_admin)
+CREATE OR REPLACE FUNCTION public.prevent_club_admin_membership_escalation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF public.app_current_global_role() NOT IN ('super_admin', 'system_seed') THEN
+    IF TG_OP = 'INSERT' AND NEW.membership_role = 'club_admin' THEN
+      RAISE EXCEPTION 'Privilege escalation denied: only Super Admin can assign Club Admin memberships';
+    ELSIF TG_OP = 'UPDATE' AND (NEW.membership_role = 'club_admin' OR OLD.membership_role = 'club_admin') THEN
+      RAISE EXCEPTION 'Privilege escalation denied: only Super Admin can modify Club Admin memberships';
+    ELSIF TG_OP = 'DELETE' AND OLD.membership_role = 'club_admin' THEN
+      RAISE EXCEPTION 'Privilege escalation denied: only Super Admin can remove Club Admin memberships';
+    END IF;
+  END IF;
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_prevent_club_admin_membership_escalation ON public.club_memberships;
+CREATE TRIGGER trg_prevent_club_admin_membership_escalation
+BEFORE INSERT OR UPDATE OR DELETE ON public.club_memberships
+FOR EACH ROW
+EXECUTE FUNCTION public.prevent_club_admin_membership_escalation();
 
 -- 3. Transactional follower_count sync trigger (prevents client-supplied follower counts)
 CREATE OR REPLACE FUNCTION public.sync_club_follower_count()
@@ -192,13 +346,35 @@ ALTER TABLE public.auth_sessions ENABLE ROW LEVEL SECURITY;
 
 -- 6. Explicit RLS Policies (idempotent drop + create)
 
--- users
+-- users (Never expose PII to unauthenticated/public sessions)
 DROP POLICY IF EXISTS users_select_policy ON public.users;
 CREATE POLICY users_select_policy ON public.users
   FOR SELECT USING (
     public.app_is_system_auth()
     OR id = public.app_current_user_id()
-    OR EXISTS (SELECT 1 FROM public.club_memberships cm WHERE cm.user_id = users.id AND cm.status = 'active')
+    OR (
+      public.app_current_user_id() IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM public.club_memberships cm
+        WHERE cm.user_id = users.id
+          AND cm.status = 'active'
+          AND public.app_is_club_admin(cm.club_id)
+      )
+    )
+    OR (
+      public.app_current_user_id() IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM public.registrations r
+        JOIN public.events e ON e.id = r.event_id
+        WHERE r.user_id = users.id
+          AND (
+            public.app_has_club_permission(e.club_id, 'VIEW_REGISTRATIONS')
+            OR public.app_has_club_permission(e.club_id, 'SCAN_ATTENDANCE')
+          )
+      )
+    )
   );
 
 DROP POLICY IF EXISTS users_insert_policy ON public.users;
@@ -227,10 +403,7 @@ CREATE POLICY clubs_select_policy ON public.clubs
     status = 'active'
     OR public.app_is_system_auth()
     OR public.app_is_club_admin(id)
-    OR EXISTS (
-      SELECT 1 FROM public.club_memberships cm
-      WHERE cm.club_id = clubs.id AND cm.user_id = public.app_current_user_id() AND cm.status = 'active'
-    )
+    OR public.app_is_club_member(id)
   );
 
 DROP POLICY IF EXISTS clubs_insert_policy ON public.clubs;
@@ -256,10 +429,14 @@ CREATE POLICY clubs_update_policy ON public.clubs
 DROP POLICY IF EXISTS club_memberships_select_policy ON public.club_memberships;
 CREATE POLICY club_memberships_select_policy ON public.club_memberships
   FOR SELECT USING (
-    status = 'active'
-    OR public.app_is_system_auth()
+    public.app_is_system_auth()
     OR user_id = public.app_current_user_id()
     OR public.app_is_club_admin(club_id)
+    OR (
+      public.app_current_user_id() IS NOT NULL
+      AND status = 'active'
+      AND public.app_is_club_member(club_id)
+    )
   );
 
 DROP POLICY IF EXISTS club_memberships_modify_policy ON public.club_memberships;
@@ -615,3 +792,34 @@ CREATE POLICY auth_sessions_policy ON public.auth_sessions
   WITH CHECK (
     user_id = public.app_current_user_id() OR public.app_is_system_auth()
   );
+
+-- 7. Explicit Function Execute Privilege Separation
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'campusverse_app') THEN
+    REVOKE ALL ON FUNCTION public.app_current_user_id() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION public.app_current_global_role() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION public.app_is_super_admin() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION public.app_is_system_auth() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION public.app_is_club_admin(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION public.app_is_club_member(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION public.app_has_club_permission(uuid, text) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION public.get_public_club_member_counts() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION public.get_live_club_follow_counts() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION public.get_public_club_team(uuid) FROM PUBLIC;
+    REVOKE ALL ON FUNCTION public.get_club_follow_target(text) FROM PUBLIC;
+
+    GRANT EXECUTE ON FUNCTION public.app_current_user_id() TO campusverse_app;
+    GRANT EXECUTE ON FUNCTION public.app_current_global_role() TO campusverse_app;
+    GRANT EXECUTE ON FUNCTION public.app_is_super_admin() TO campusverse_app;
+    GRANT EXECUTE ON FUNCTION public.app_is_system_auth() TO campusverse_app;
+    GRANT EXECUTE ON FUNCTION public.app_is_club_admin(uuid) TO campusverse_app;
+    GRANT EXECUTE ON FUNCTION public.app_is_club_member(uuid) TO campusverse_app;
+    GRANT EXECUTE ON FUNCTION public.app_has_club_permission(uuid, text) TO campusverse_app;
+    GRANT EXECUTE ON FUNCTION public.get_public_club_member_counts() TO campusverse_app;
+    GRANT EXECUTE ON FUNCTION public.get_live_club_follow_counts() TO campusverse_app;
+    GRANT EXECUTE ON FUNCTION public.get_public_club_team(uuid) TO campusverse_app;
+    GRANT EXECUTE ON FUNCTION public.get_club_follow_target(text) TO campusverse_app;
+  END IF;
+END
+$$;

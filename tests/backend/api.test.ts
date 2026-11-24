@@ -209,4 +209,147 @@ describe('CampusVerse Backend API & Business Rules', () => {
     expect(allowed.status).toBe(200);
     expect(allowed.body.data.totalClubs).toBeGreaterThanOrEqual(8);
   });
+
+  it('validates strict user profile updates and returns followed clubs with limit metadata', async () => {
+    const studentToken = await loginAs('usr-student-1');
+
+    const badPatch = await request(app)
+      .patch('/api/v1/users/me')
+      .set('Authorization', `Bearer ${studentToken}`)
+      .send({name: 'Aarav Updated', globalRole: 'super_admin'});
+    expect(badPatch.status).toBe(400);
+
+    const goodPatch = await request(app)
+      .patch('/api/v1/users/me')
+      .set('Authorization', `Bearer ${studentToken}`)
+      .send({department: 'Robotics & AI'});
+    expect(goodPatch.status).toBe(200);
+    expect(goodPatch.body.data.department).toBe('Robotics & AI');
+
+    const followedRes = await request(app)
+      .get('/api/v1/users/me/followed-clubs')
+      .set('Authorization', `Bearer ${studentToken}`);
+    expect(followedRes.status).toBe(200);
+    expect(followedRes.body.data).toHaveLength(1);
+    expect(followedRes.body.meta).toEqual({count: 1, limit: 2});
+  });
+
+  it('enforces inactive club exclusion from discovery/HoF/follows and redacts team emails for students', async () => {
+    const superToken = await loginAs('usr-super-admin');
+    const studentToken = await loginAs('usr-student-1');
+    const clubAdminToken = await loginAs('usr-club-admin-1');
+
+    // Public club detail redacts team emails from students
+    const publicDetail = await request(app)
+      .get('/api/v1/clubs/club-robotics')
+      .set('Authorization', `Bearer ${studentToken}`);
+    expect(publicDetail.status).toBe(200);
+    expect(publicDetail.body.data.team.length).toBeGreaterThan(0);
+    expect(publicDetail.body.data.team[0].userEmail).toBeUndefined();
+
+    // Club admin of that club sees team emails
+    const adminDetail = await request(app)
+      .get('/api/v1/clubs/club-robotics')
+      .set('Authorization', `Bearer ${clubAdminToken}`);
+    expect(adminDetail.status).toBe(200);
+    expect(adminDetail.body.data.team[0].userEmail).toBeTruthy();
+
+    // Non-super-admin cannot change club status
+    const statusDenied = await request(app)
+      .patch('/api/v1/clubs/club-green/status')
+      .set('Authorization', `Bearer ${clubAdminToken}`)
+      .send({status: 'inactive'});
+    expect(statusDenied.status).toBe(403);
+
+    // Super Admin deactivates club-green
+    const deactivated = await request(app)
+      .patch('/api/v1/clubs/club-green/status')
+      .set('Authorization', `Bearer ${superToken}`)
+      .send({status: 'inactive', reason: 'Semester recess'});
+    expect(deactivated.status).toBe(200);
+    expect(deactivated.body.data.status).toBe('inactive');
+
+    const directory = await request(app).get('/api/v1/clubs');
+    expect(directory.body.data.some((c: {id: string}) => c.id === 'club-green')).toBe(false);
+
+    const hof = await request(app).get('/api/v1/hall-of-fame');
+    expect(hof.body.data.some((e: {club: {id: string}}) => e.club.id === 'club-green')).toBe(false);
+
+    const hiddenDetail = await request(app)
+      .get('/api/v1/clubs/club-green')
+      .set('Authorization', `Bearer ${studentToken}`);
+    expect(hiddenDetail.status).toBe(404);
+
+    const followInactive = await request(app)
+      .post('/api/v1/clubs/club-green/follow')
+      .set('Authorization', `Bearer ${studentToken}`);
+    expect(followInactive.status).toBe(422);
+    expect(followInactive.body.error.code).toBe('CLUB_NOT_ACTIVE');
+  });
+
+  it('enforces Super Admin-only Club Admin assignment, duplicate 409 conflict, and /admin/memberships', async () => {
+    const clubAdminToken = await loginAs('usr-club-admin-1');
+    const superToken = await loginAs('usr-super-admin');
+
+    // Club Admin cannot assign another Club Admin
+    const assignAdminDenied = await request(app)
+      .post('/api/v1/clubs/club-robotics/members')
+      .set('Authorization', `Bearer ${clubAdminToken}`)
+      .send({
+        email: 'aarav.mehta@campusverse.edu',
+        role: 'club_admin',
+        title: 'Co-President',
+        permissions: [],
+      });
+    expect(assignAdminDenied.status).toBe(403);
+
+    // Club Admin CAN add a Core Member, and duplicate POST returns 409
+    const addCore = await request(app)
+      .post('/api/v1/clubs/club-robotics/members')
+      .set('Authorization', `Bearer ${clubAdminToken}`)
+      .send({
+        email: 'aarav.mehta@campusverse.edu',
+        role: 'core_member',
+        title: 'Logistics Lead',
+        permissions: ['VIEW_REGISTRATIONS', 'SCAN_ATTENDANCE'],
+      });
+    expect(addCore.status).toBe(201);
+
+    const dupCore = await request(app)
+      .post('/api/v1/clubs/club-robotics/members')
+      .set('Authorization', `Bearer ${clubAdminToken}`)
+      .send({
+        email: 'aarav.mehta@campusverse.edu',
+        role: 'core_member',
+        title: 'Logistics Lead',
+        permissions: ['VIEW_REGISTRATIONS'],
+      });
+    expect(dupCore.status).toBe(409);
+
+    // Club Admin cannot remove existing Club Admin
+    const teamRes = await request(app)
+      .get('/api/v1/clubs/club-robotics/members')
+      .set('Authorization', `Bearer ${clubAdminToken}`);
+    const existingAdmin = (teamRes.body.data as Array<{id: string; role: string}>).find(
+      (m) => m.role === 'club_admin',
+    )!;
+    const removeAdminDenied = await request(app)
+      .delete(`/api/v1/clubs/club-robotics/members/${existingAdmin.id}`)
+      .set('Authorization', `Bearer ${clubAdminToken}`);
+    expect(removeAdminDenied.status).toBe(403);
+
+    // Super Admin can list all memberships and promote Core Member to Club Admin
+    const allMemberships = await request(app)
+      .get('/api/v1/admin/memberships')
+      .set('Authorization', `Bearer ${superToken}`);
+    expect(allMemberships.status).toBe(200);
+    expect(allMemberships.body.data.length).toBeGreaterThanOrEqual(3);
+
+    const promoted = await request(app)
+      .patch(`/api/v1/clubs/club-robotics/members/${addCore.body.data.id}`)
+      .set('Authorization', `Bearer ${superToken}`)
+      .send({role: 'club_admin'});
+    expect(promoted.status).toBe(200);
+    expect(promoted.body.data.role).toBe('club_admin');
+  });
 });

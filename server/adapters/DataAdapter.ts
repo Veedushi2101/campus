@@ -61,7 +61,12 @@ export interface DataAdapter {
   }): Promise<UserAccount>;
 
   // Clubs
-  listClubs(filters?: {search?: string; category?: string; includeAllStatuses?: boolean}): Promise<Club[]>;
+  listClubs(filters?: {
+    search?: string;
+    category?: string;
+    status?: ClubStatus;
+    includeAllStatuses?: boolean;
+  }): Promise<Club[]>;
   getClubDetail(clubId: string, viewerUserId?: string): Promise<ClubDetail | null>;
   createClub(input: {
     name: string;
@@ -70,6 +75,8 @@ export interface DataAdapter {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    status?: ClubStatus;
+    createdByUserId?: string;
   }): Promise<Club>;
   updateClub(clubId: string, updates: Partial<Club>): Promise<Club | null>;
   updateClubStatus(clubId: string, status: ClubStatus): Promise<Club | null>;
@@ -77,12 +84,15 @@ export interface DataAdapter {
   // Memberships & Following
   getMembershipsForUser(userId: string): Promise<ClubMembership[]>;
   getClubMemberships(clubId: string): Promise<ClubMembership[]>;
+  listAllMemberships(): Promise<ClubMembership[]>;
   upsertClubMembership(input: {
     clubId: string;
     userId: string;
     role: ClubMembership['role'];
     title: string;
     permissions: CoreMemberPermission[];
+    assignedByUserId?: string;
+    strictInsert?: boolean;
   }): Promise<ClubMembership>;
   updateMembershipPermissions(
     clubId: string,
@@ -90,7 +100,7 @@ export interface DataAdapter {
     updates: {
       role?: ClubMembership['role'];
       title?: string;
-      permissions: CoreMemberPermission[];
+      permissions?: CoreMemberPermission[];
     },
   ): Promise<ClubMembership | null>;
   removeClubMembership(clubId: string, membershipId: string): Promise<boolean>;

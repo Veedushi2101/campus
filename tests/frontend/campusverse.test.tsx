@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
-import {cleanup, render, screen} from '@testing-library/react';
+import {cleanup, fireEvent, render, screen} from '@testing-library/react';
 import {MemoryRouter} from 'react-router-dom';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {AuthProvider} from '../../src/context/AuthContext.tsx';
 import {ToastProvider} from '../../src/context/ToastContext.tsx';
+import {apiClient} from '../../src/adapters/ApiDataAdapter.ts';
+import {ClubTeamPage} from '../../src/pages/club/ClubTeamPage.tsx';
 import {LandingPage} from '../../src/pages/public/LandingPage.tsx';
 import {LoginPage} from '../../src/pages/public/LoginPage.tsx';
 import {HallOfFamePage} from '../../src/pages/student/HallOfFamePage.tsx';
@@ -196,5 +198,127 @@ describe('CampusVerse Frontend Components', () => {
     expect(screen.getByText('Atelier Design Guild')).toBeInTheDocument();
     expect(screen.getByText('Resonance Acoustic Society')).toBeInTheDocument();
     expect(screen.getAllByText(/Rank #2 \(Tied\)/)).toHaveLength(2);
+  });
+});
+
+describe('CampusVerse Phase 3 Frontend Workflows', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('shows all clubs tied at rank #3 inside the Hall of Fame podium showcase', async () => {
+    const spy = vi.spyOn(apiClient, 'getHallOfFame').mockResolvedValue([
+      {
+        rank: 1,
+        followerCount: 10,
+        eventsHosted: 2,
+        tieCount: 1,
+        club: {
+          id: 'c1',
+          name: 'First Place Club',
+          slug: 'first',
+          category: 'Technology',
+          tagline: 'Leader',
+          description: 'Desc',
+          logoUrl: '',
+          status: 'active',
+          followerCount: 10,
+          memberCount: 5,
+          upcomingEventsCount: 1,
+          foundedYear: 2020,
+          meetingSchedule: 'Mon',
+          contactEmail: 'a@campusverse.edu',
+          createdAt: '2026-08-01T00:00:00Z',
+        },
+      },
+      {
+        rank: 2,
+        followerCount: 6,
+        eventsHosted: 1,
+        tieCount: 1,
+        club: {
+          id: 'c2',
+          name: 'Second Place Club',
+          slug: 'second',
+          category: 'Design',
+          tagline: 'Runner up',
+          description: 'Desc',
+          logoUrl: '',
+          status: 'active',
+          followerCount: 6,
+          memberCount: 4,
+          upcomingEventsCount: 1,
+          foundedYear: 2021,
+          meetingSchedule: 'Tue',
+          contactEmail: 'b@campusverse.edu',
+          createdAt: '2026-08-01T00:00:00Z',
+        },
+      },
+      {
+        rank: 3,
+        followerCount: 4,
+        eventsHosted: 1,
+        tieCount: 2,
+        club: {
+          id: 'c3',
+          name: 'Third Place Tie Alpha',
+          slug: 'third-a',
+          category: 'Music & Arts',
+          tagline: 'Tied 3rd A',
+          description: 'Desc',
+          logoUrl: '',
+          status: 'active',
+          followerCount: 4,
+          memberCount: 3,
+          upcomingEventsCount: 0,
+          foundedYear: 2022,
+          meetingSchedule: 'Wed',
+          contactEmail: 'c@campusverse.edu',
+          createdAt: '2026-08-01T00:00:00Z',
+        },
+      },
+      {
+        rank: 3,
+        followerCount: 4,
+        eventsHosted: 0,
+        tieCount: 2,
+        club: {
+          id: 'c4',
+          name: 'Third Place Tie Beta',
+          slug: 'third-b',
+          category: 'Social Impact',
+          tagline: 'Tied 3rd B',
+          description: 'Desc',
+          logoUrl: '',
+          status: 'active',
+          followerCount: 4,
+          memberCount: 3,
+          upcomingEventsCount: 0,
+          foundedYear: 2023,
+          meetingSchedule: 'Thu',
+          contactEmail: 'd@campusverse.edu',
+          createdAt: '2026-08-01T00:00:00Z',
+        },
+      },
+    ]);
+
+    try {
+      renderWithProviders(<HallOfFamePage />);
+      expect(await screen.findByText('First Place Club')).toBeInTheDocument();
+      expect(screen.getByText('Third Place Tie Alpha')).toBeInTheDocument();
+      expect(screen.getByText('Third Place Tie Beta')).toBeInTheDocument();
+      expect(screen.getAllByText(/Rank #3 \(Tied\)/)).toHaveLength(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('restricts Add Team Member role selector to Core Member for non-Super-Admin Club Admins', async () => {
+    renderWithProviders(<ClubTeamPage />);
+    const addButton = await screen.findByRole('button', {name: /Add Team Member/i});
+    fireEvent.click(addButton);
+    expect(
+      await screen.findByText(/Only a Super Admin can assign Club Admins/i),
+    ).toBeInTheDocument();
   });
 });

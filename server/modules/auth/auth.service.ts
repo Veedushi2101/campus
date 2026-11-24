@@ -93,17 +93,10 @@ export class AuthService {
   async getSessionMe(
     userId: string,
     authMode: 'demo' | 'supabase',
-    meta?: {userAgent?: string},
+    _meta?: {userAgent?: string},
   ): Promise<AuthSessionResponse> {
     const user = await this.adapter.getUserById(userId);
     if (!user) throw new UnauthorizedError('Authenticated user not found');
-
-    if (authMode === 'supabase' && this.adapter.recordAuthSession) {
-      await this.adapter.recordAuthSession({
-        userId: user.id,
-        userAgent: meta?.userAgent,
-      });
-    }
 
     const [memberships, follows] = await Promise.all([
       this.adapter.getMembershipsForUser(user.id),

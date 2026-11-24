@@ -1,5 +1,9 @@
 import {Router} from 'express';
-import {createClubSchema, updateClubSchema} from '../../../shared/schemas/validation.ts';
+import {
+  createClubSchema,
+  updateClubSchema,
+  updateClubStatusSchema,
+} from '../../../shared/schemas/validation.ts';
 import type {DataAdapter} from '../../adapters/DataAdapter.ts';
 import {requireClubAdmin, requireSuperAdmin} from '../../middleware/authorization.ts';
 import {validateBody} from '../../middleware/validation.ts';
@@ -19,6 +23,12 @@ export function createClubsRoutes(adapter: DataAdapter): Router {
     requireClubAdmin('clubId'),
     validateBody(updateClubSchema),
     controller.update,
+  );
+  router.patch(
+    '/clubs/:clubId/status',
+    requireSuperAdmin,
+    validateBody(updateClubStatusSchema),
+    controller.updateStatus,
   );
 
   return router;

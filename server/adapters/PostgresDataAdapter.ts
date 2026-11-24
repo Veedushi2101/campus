@@ -107,6 +107,7 @@ export class PostgresDataAdapter implements DataAdapter {
   listClubs(filters?: {
     search?: string;
     category?: string;
+    status?: ClubStatus;
     includeAllStatuses?: boolean;
   }): Promise<Club[]> {
     return this.clubsRepo.listClubs(filters);
@@ -123,6 +124,8 @@ export class PostgresDataAdapter implements DataAdapter {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    status?: ClubStatus;
+    createdByUserId?: string;
   }): Promise<Club> {
     return this.clubsRepo.createClub(input);
   }
@@ -144,12 +147,18 @@ export class PostgresDataAdapter implements DataAdapter {
     return this.clubsRepo.getClubMemberships(clubId);
   }
 
+  listAllMemberships(): Promise<ClubMembership[]> {
+    return this.clubsRepo.listAllMemberships();
+  }
+
   upsertClubMembership(input: {
     clubId: string;
     userId: string;
     role: ClubMembership['role'];
     title: string;
     permissions: CoreMemberPermission[];
+    assignedByUserId?: string;
+    strictInsert?: boolean;
   }): Promise<ClubMembership> {
     return this.clubsRepo.upsertClubMembership(input);
   }
@@ -160,7 +169,7 @@ export class PostgresDataAdapter implements DataAdapter {
     updates: {
       role?: ClubMembership['role'];
       title?: string;
-      permissions: CoreMemberPermission[];
+      permissions?: CoreMemberPermission[];
     },
   ): Promise<ClubMembership | null> {
     return this.clubsRepo.updateMembershipPermissions(clubId, membershipId, updates);

@@ -11,7 +11,7 @@ import {useAuth} from '../../context/AuthContext.tsx';
 import {useToast} from '../../context/ToastContext.tsx';
 
 export const ExploreClubsPage: React.FC = () => {
-  const {followedClubIds, refreshSession} = useAuth();
+  const {followedClubIds, refreshSession, isAuthenticated} = useAuth();
   const {toast} = useToast();
   const queryClient = useQueryClient();
 
@@ -25,13 +25,23 @@ export const ExploreClubsPage: React.FC = () => {
     queryFn: () => apiClient.listClubs({search, category, sortBy}),
   });
 
+  const {data: followedClubs = []} = useQuery({
+    queryKey: ['followed-clubs'],
+    queryFn: () => apiClient.getMyFollowedClubs(),
+    enabled: isAuthenticated && followedClubIds.length > 0,
+  });
+
   const followMutation = useMutation({
     mutationFn: (clubId: string) => apiClient.followClub(clubId),
     onSuccess: async () => {
       setLimitNotice(null);
       await refreshSession();
-      await queryClient.invalidateQueries({queryKey: ['clubs']});
-      await queryClient.invalidateQueries({queryKey: ['hall-of-fame']});
+      await Promise.all([
+        queryClient.invalidateQueries({queryKey: ['clubs']}),
+        queryClient.invalidateQueries({queryKey: ['hall-of-fame']}),
+        queryClient.invalidateQueries({queryKey: ['followed-clubs']}),
+        queryClient.invalidateQueries({queryKey: ['club']}),
+      ]);
       toast.success('Club followed');
     },
     onError: (err) => {
@@ -46,8 +56,12 @@ export const ExploreClubsPage: React.FC = () => {
     onSuccess: async () => {
       setLimitNotice(null);
       await refreshSession();
-      await queryClient.invalidateQueries({queryKey: ['clubs']});
-      await queryClient.invalidateQueries({queryKey: ['hall-of-fame']});
+      await Promise.all([
+        queryClient.invalidateQueries({queryKey: ['clubs']}),
+        queryClient.invalidateQueries({queryKey: ['hall-of-fame']}),
+        queryClient.invalidateQueries({queryKey: ['followed-clubs']}),
+        queryClient.invalidateQueries({queryKey: ['club']}),
+      ]);
       toast.info('Club unfollowed');
     },
     onError: (err) => {
@@ -88,18 +102,37 @@ export const ExploreClubsPage: React.FC = () => {
       {(atLimit || limitNotice) && (
         <div
           role="status"
-          className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900"
+          className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900 sm:flex-row sm:items-center sm:justify-between"
         >
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
-          <div>
-            <p className="font-semibold">
-              Two-Club Follow Limit Reached ({followedClubIds.length}/{MAX_FOLLOWED_CLUBS})
-            </p>
-            <p className="mt-0.5 leading-relaxed text-amber-800">
-              {limitNotice ||
-                'CampusVerse caps student follows at two clubs to keep Hall of Fame rankings meaningful. Unfollow one of your existing clubs to follow a new club.'}
-            </p>
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+            <div>
+              <p className="font-semibold">
+                Two-Club Follow Limit Reached ({followedClubIds.length}/{MAX_FOLLOWED_CLUBS})
+              </p>
+              <p className="mt-0.5 leading-relaxed text-amber-800">
+                {limitNotice ||
+                  'CampusVerse caps student follows at two clubs to keep Hall of Fame rankings meaningful. Unfollow one of your existing clubs to follow a new club.'}
+              </p>
+            </div>
           </div>
+
+          {followedClubs.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {followedClubs.map((fc) => (
+                <Button
+                  key={fc.id}
+                  size="sm"
+                  variant="outline"
+                  loading={unfollowMutation.isPending && unfollowMutation.variables === fc.id}
+                  onClick={() => unfollowMutation.mutate(fc.id)}
+                >
+                  <UserMinus className="h-3.5 w-3.5 text-amber-700" />
+                  Unfollow {fc.name}
+                </Button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

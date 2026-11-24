@@ -66,7 +66,7 @@ export function createApp(adapter: DataAdapter = demoDataAdapter): Express {
     sendSuccess(res, {
       status: 'ok',
       service: 'campusverse-api',
-      phase: 'phase-2',
+      phase: 'phase-3',
       mode: persistenceMode === 'in_memory_demo' ? 'demo' : 'production',
       persistence: persistenceMode === 'postgres' ? 'postgresql-drizzle-rls' : 'in-memory-demo-adapter',
       timestamp: new Date().toISOString(),
@@ -89,7 +89,7 @@ export function createApp(adapter: DataAdapter = demoDataAdapter): Express {
     return sendSuccess(res, {
       status: 'ready',
       service: 'campusverse-api',
-      phase: 'phase-2',
+      phase: 'phase-3',
       persistence: check.persistence,
       latencyMs: check.latencyMs,
       timestamp: new Date().toISOString(),

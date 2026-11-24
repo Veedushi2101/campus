@@ -5,11 +5,20 @@ import {
   EVENT_CATEGORIES,
 } from '../constants/permissions.ts';
 
-export const updateProfileSchema = z.object({
-  name: z.string().trim().min(2, 'Name must be at least 2 characters').max(80),
-  department: z.string().trim().min(2, 'Department is required').max(80),
-  yearOfStudy: z.string().trim().min(1, 'Year of study is required').max(30),
-});
+export const updateProfileSchema = z
+  .object({
+    name: z.string().trim().min(2, 'Name must be at least 2 characters').max(80),
+    department: z.string().trim().min(2, 'Department is required').max(80),
+    yearOfStudy: z.string().trim().min(1, 'Year of study is required').max(30),
+  })
+  .strict();
+
+export const patchProfileSchema = updateProfileSchema
+  .partial()
+  .strict()
+  .refine((data) => Object.keys(data).length > 0, {
+    message: 'At least one profile field (name, department, yearOfStudy) must be provided',
+  });
 
 export const loginDemoSchema = z.object({
   personaId: z.string().trim().min(1).optional(),
@@ -36,27 +45,52 @@ export const createClubSchema = z.object({
   description: z.string().trim().min(20, 'Description must be at least 20 characters').max(1500),
   meetingSchedule: z.string().trim().min(4).max(120),
   contactEmail: z.string().trim().email('Valid contact email is required'),
+  status: z.enum(['active', 'inactive', 'pending_review']).optional(),
 });
 
-export const updateClubSchema = createClubSchema.partial();
+export const updateClubSchema = z
+  .object({
+    name: z.string().trim().min(3, 'Club name must be at least 3 characters').max(80),
+    category: z.enum(CLUB_CATEGORIES),
+    tagline: z.string().trim().min(8, 'Tagline must be at least 8 characters').max(140),
+    description: z.string().trim().min(20, 'Description must be at least 20 characters').max(1500),
+    meetingSchedule: z.string().trim().min(4).max(120),
+    contactEmail: z.string().trim().email('Valid contact email is required'),
+    logoUrl: z.string().trim().max(500).optional(),
+  })
+  .partial()
+  .strict()
+  .refine((data) => Object.keys(data).length > 0, {
+    message: 'At least one club field must be provided for update',
+  });
 
 export const updateClubStatusSchema = z.object({
-  status: z.enum(['active', 'suspended', 'pending_review']),
+  status: z.enum(['active', 'inactive', 'suspended', 'pending_review']),
   reason: z.string().trim().max(300).optional(),
 });
 
-export const upsertClubMemberSchema = z.object({
-  email: z.string().trim().email('Valid institutional email is required'),
-  role: z.enum(['club_admin', 'core_member']),
-  title: z.string().trim().min(2, 'Role title is required').max(60),
-  permissions: z.array(z.enum(CORE_MEMBER_PERMISSIONS)).default([]),
-});
+export const upsertClubMemberSchema = z
+  .object({
+    email: z.string().trim().email('Valid institutional email is required').optional(),
+    userId: z.string().trim().uuid('Valid user ID is required').optional(),
+    role: z.enum(['club_admin', 'core_member']),
+    title: z.string().trim().min(2, 'Role title is required').max(60),
+    permissions: z.array(z.enum(CORE_MEMBER_PERMISSIONS)).default([]),
+  })
+  .refine((data) => Boolean(data.email || data.userId), {
+    message: 'Either email or userId must be provided',
+  });
 
-export const updateMemberPermissionsSchema = z.object({
-  role: z.enum(['club_admin', 'core_member']).optional(),
-  title: z.string().trim().min(2).max(60).optional(),
-  permissions: z.array(z.enum(CORE_MEMBER_PERMISSIONS)),
-});
+export const updateMemberPermissionsSchema = z
+  .object({
+    role: z.enum(['club_admin', 'core_member']).optional(),
+    title: z.string().trim().min(2).max(60).optional(),
+    permissions: z.array(z.enum(CORE_MEMBER_PERMISSIONS)).optional(),
+  })
+  .refine(
+    (data) => data.role !== undefined || data.title !== undefined || data.permissions !== undefined,
+    {message: 'At least one membership field must be updated'},
+  );
 
 export const createEventSchema = z.object({
   title: z.string().trim().min(4, 'Event title must be at least 4 characters').max(120),

@@ -123,7 +123,7 @@ export class ApiDataAdapter implements ClientDataAdapter {
     return this.request<void>('/auth/logout', {method: 'POST'});
   }
 
-  updateMyProfile(input: {name: string; department: string; yearOfStudy: string}) {
+  updateMyProfile(input: Partial<{name: string; department: string; yearOfStudy: string}>) {
     return this.request<UserAccount>('/users/me', {
       method: 'PATCH',
       body: JSON.stringify(input),
@@ -157,6 +157,7 @@ export class ApiDataAdapter implements ClientDataAdapter {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    status?: ClubStatus;
   }) {
     return this.request<Club>('/clubs', {
       method: 'POST',
@@ -166,6 +167,10 @@ export class ApiDataAdapter implements ClientDataAdapter {
 
   getMyMemberships() {
     return this.request<{memberships: ClubMembership[]; follows: ClubFollow[]}>('/memberships/me');
+  }
+
+  getMyFollowedClubs() {
+    return this.request<Club[]>('/users/me/followed-clubs');
   }
 
   followClub(clubId: string) {
@@ -186,7 +191,13 @@ export class ApiDataAdapter implements ClientDataAdapter {
 
   upsertClubMember(
     clubId: string,
-    input: {email: string; role: 'club_admin' | 'core_member'; title: string; permissions: CoreMemberPermission[]},
+    input: {
+      email?: string;
+      userId?: string;
+      role: 'club_admin' | 'core_member';
+      title: string;
+      permissions: CoreMemberPermission[];
+    },
   ) {
     return this.request<ClubMembership>(`/clubs/${encodeURIComponent(clubId)}/members`, {
       method: 'POST',
@@ -197,7 +208,11 @@ export class ApiDataAdapter implements ClientDataAdapter {
   updateMemberPermissions(
     clubId: string,
     membershipId: string,
-    updates: {role?: 'club_admin' | 'core_member'; title?: string; permissions: CoreMemberPermission[]},
+    updates: {
+      role?: 'club_admin' | 'core_member';
+      title?: string;
+      permissions?: CoreMemberPermission[];
+    },
   ) {
     return this.request<ClubMembership>(
       `/clubs/${encodeURIComponent(clubId)}/members/${encodeURIComponent(membershipId)}`,
@@ -371,6 +386,10 @@ export class ApiDataAdapter implements ClientDataAdapter {
 
   listAdminClubs() {
     return this.request<Club[]>('/admin/clubs');
+  }
+
+  listAdminMemberships() {
+    return this.request<ClubMembership[]>('/admin/memberships');
   }
 
   updateClubStatus(clubId: string, status: ClubStatus, reason?: string) {

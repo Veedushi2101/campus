@@ -22,4 +22,16 @@ export class UsersController {
       next(error);
     }
   };
+
+  getFollowedClubs = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const result = await this.service.getMyFollowedClubs(req.auth!.user.id);
+      sendSuccess(res, result.clubs, 200, {
+        count: result.count,
+        limit: result.limit,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
 }

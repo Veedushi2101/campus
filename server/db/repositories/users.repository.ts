@@ -1,8 +1,9 @@
-import {asc, eq, or, sql} from 'drizzle-orm';
+import {asc, eq, or} from 'drizzle-orm';
 import type {UserAccount} from '../../../shared/types/domain.ts';
+import {ForbiddenError} from '../../shared/errors/AppError.ts';
 import {withRlsTransaction} from '../index.ts';
 import {authSessions, users} from '../schema.ts';
-import {computeInitials, isUuid, mapUserRow} from './mappers.ts';
+import {computeInitials, isPgUniqueViolation, isUuid, mapUserRow} from './mappers.ts';
 
 export class UsersRepository {
   async getUserById(userId: string): Promise<UserAccount | null> {
@@ -43,6 +44,12 @@ export class UsersRepository {
     emailVerified: boolean;
     isBootstrapSuperAdmin: boolean;
   }): Promise<UserAccount> {
+    if (!input.emailVerified) {
+      throw new ForbiddenError(
+        'Please verify your institutional email address before accessing CampusVerse',
+      );
+    }
+
     const normalizedEmail = input.email.trim().toLowerCase();
     const displayName =
       input.name?.trim() ||
@@ -95,23 +102,40 @@ export class UsersRepository {
         }
 
         const studentCode = `STU-${new Date().getFullYear()}-${input.authUserId.slice(0, 6).toUpperCase()}`;
-        const inserted = await tx
-          .insert(users)
-          .values({
-            authUserId: input.authUserId,
-            email: input.email.trim(),
-            normalizedEmail,
-            displayName: displayName || 'CampusVerse Student',
-            department: input.department?.trim() || 'Computer Science & Engineering',
-            yearOfStudy: input.yearOfStudy?.trim() || 'Undergraduate',
-            studentId: studentCode,
-            globalRole: input.isBootstrapSuperAdmin ? 'super_admin' : 'user',
-            accountStatus: 'active',
-            emailVerifiedAt: input.emailVerified ? new Date() : null,
-          })
-          .returning();
+        try {
+          const inserted = await tx
+            .insert(users)
+            .values({
+              authUserId: input.authUserId,
+              email: input.email.trim(),
+              normalizedEmail,
+              displayName: displayName || 'CampusVerse Student',
+              department: input.department?.trim() || 'Computer Science & Engineering',
+              yearOfStudy: input.yearOfStudy?.trim() || 'Undergraduate',
+              studentId: studentCode,
+              globalRole: input.isBootstrapSuperAdmin ? 'super_admin' : 'user',
+              accountStatus: 'active',
+              emailVerifiedAt: new Date(),
+            })
+            .returning();
 
-        return mapUserRow(inserted[0]);
+          return mapUserRow(inserted[0]);
+        } catch (err: unknown) {
+          if (isPgUniqueViolation(err)) {
+            const raced = await tx
+              .select()
+              .from(users)
+              .where(
+                or(
+                  eq(users.authUserId, input.authUserId),
+                  eq(users.normalizedEmail, normalizedEmail),
+                ),
+              )
+              .limit(1);
+            if (raced[0]) return mapUserRow(raced[0]);
+          }
+          throw err;
+        }
       },
       {globalRole: 'auth_resolver'},
     );

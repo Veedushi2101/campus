@@ -66,7 +66,11 @@ export const clubs = pgTable(
   },
   (table) => [
     index('idx_clubs_status_category').on(table.status, table.category),
-    check('chk_clubs_status', sql`${table.status} IN ('pending', 'pending_review', 'active', 'suspended')`),
+    index('idx_clubs_status_followers').on(table.status, table.followerCount),
+    check(
+      'chk_clubs_status',
+      sql`${table.status} IN ('pending', 'pending_review', 'active', 'inactive', 'suspended')`,
+    ),
     check('chk_clubs_follower_count', sql`${table.followerCount} >= 0`),
   ],
 );

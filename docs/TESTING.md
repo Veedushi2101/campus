@@ -1,5 +1,6 @@
 # Testing Strategy
 
-- **Backend Integration (`tests/backend/api.test.ts`)**: Vitest + Supertest verifying auth boundaries, 2-club limit, Hall of Fame tie ranking, Club Admin/Core Member scopes, financial privacy (`403` for students), non-PII QR generation, and single-use attendance duplicate rejection (`409`).
-- **Frontend Unit/Component (`tests/frontend/campusverse.test.tsx`)**: Vitest + React Testing Library verifying landing page contract and Hall of Fame tie display.
+- **Backend API & Authorization (`tests/backend/api.test.ts`)**: Vitest + Supertest verifying auth boundaries, strict profile updates, 2-club follow limits, inactive club exclusions (`422 CLUB_NOT_ACTIVE`), Super Admin-only Club Admin assignment (`403`), duplicate membership rejection (`409`), team email redaction, Hall of Fame tie ranking, Club Admin/Core Member scopes, financial privacy (`403` for students), non-PII QR generation, and single-use attendance duplicate rejection (`409`).
+- **Live PostgreSQL Integration (`tests/backend/postgres.integration.test.ts`)**: Vitest against live Supabase PostgreSQL verifying `campusverse_app` privilege flags, pool restart durability, concurrent 2-club follow limits, concurrent duplicate membership conflicts, live Hall of Fame rankings, unauthenticated `users` isolation, and RLS/trigger privilege-escalation denials.
+- **Frontend Unit/Component (`tests/frontend/campusverse.test.tsx`)**: Vitest + React Testing Library verifying landing page contract, Supabase Auth mode switching, Hall of Fame rank #3 tie podium rendering, and Club Team role restrictions.
 - **End-to-End (`tests/e2e/campusverse.spec.ts`)**: Playwright suite testing all 4 roles, 2-club follow + 3rd rejected, event creation/publishing, QR scan simulation, and report submission.

@@ -93,6 +93,14 @@ export const StatusLabel: React.FC<{
       </span>
     );
   }
+  if (normalized === 'inactive') {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 capitalize whitespace-nowrap">
+        <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+        Inactive
+      </span>
+    );
+  }
   return (
     <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 capitalize whitespace-nowrap">
       <AlertCircle className="h-3.5 w-3.5 shrink-0" />

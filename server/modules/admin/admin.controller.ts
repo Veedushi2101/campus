@@ -14,10 +14,24 @@ export class AdminController {
     }
   };
 
-  clubs = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+  clubs = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const clubs = await this.service.listAllClubs();
+      const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+      const clubs = await this.service.listAllClubs(
+        status && ['active', 'inactive', 'suspended', 'pending_review'].includes(status)
+          ? (status as 'active' | 'inactive' | 'suspended' | 'pending_review')
+          : undefined,
+      );
       sendSuccess(res, clubs);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  memberships = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const memberships = await this.service.listAllMemberships();
+      sendSuccess(res, memberships);
     } catch (error) {
       next(error);
     }

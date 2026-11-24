@@ -1054,11 +1054,13 @@ export class DemoDataAdapter implements DataAdapter {
   async listClubs(filters?: {
     search?: string;
     category?: string;
+    status?: ClubStatus;
     includeAllStatuses?: boolean;
   }): Promise<Club[]> {
     return this.clubs
       .filter((club) => {
         if (!filters?.includeAllStatuses && club.status !== 'active') return false;
+        if (filters?.status && club.status !== filters.status) return false;
         if (filters?.category && filters.category !== 'All' && club.category !== filters.category) {
           return false;
         }
@@ -1083,7 +1085,24 @@ export class DemoDataAdapter implements DataAdapter {
   async getClubDetail(clubId: string, viewerUserId?: string): Promise<ClubDetail | null> {
     const club = this.clubs.find((c) => c.id === clubId || c.slug === clubId);
     if (!club) return null;
-    const team = await this.getClubMemberships(club.id);
+    const viewer = viewerUserId ? this.users.find((u) => u.id === viewerUserId) : undefined;
+    const isSuperAdmin = Boolean(viewer?.isSuperAdmin);
+    const isMember = viewerUserId
+      ? this.memberships.some((m) => m.clubId === club.id && m.userId === viewerUserId)
+      : false;
+    if (club.status !== 'active' && !isSuperAdmin && !isMember) {
+      return null;
+    }
+
+    const isClubAdmin = viewerUserId
+      ? this.memberships.some(
+          (m) => m.clubId === club.id && m.userId === viewerUserId && m.role === 'club_admin',
+        )
+      : false;
+    const rawTeam = await this.getClubMemberships(club.id);
+    const team = rawTeam.map((m) =>
+      isSuperAdmin || isClubAdmin ? m : {...m, userEmail: undefined},
+    );
     const upcomingEvents = this.events.filter(
       (e) => e.clubId === club.id && e.status === 'published',
     );
@@ -1106,6 +1125,8 @@ export class DemoDataAdapter implements DataAdapter {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    status?: ClubStatus;
+    createdByUserId?: string;
   }): Promise<Club> {
     const slug = slugify(input.name);
     if (this.clubs.some((c) => c.slug === slug)) {
@@ -1119,9 +1140,9 @@ export class DemoDataAdapter implements DataAdapter {
       tagline: input.tagline,
       description: input.description,
       logoUrl: '',
-      status: this.settings.requireClubApproval ? 'pending_review' : 'active',
+      status: input.status || (this.settings.requireClubApproval ? 'pending_review' : 'active'),
       followerCount: 0,
-      memberCount: 1,
+      memberCount: 0,
       upcomingEventsCount: 0,
       foundedYear: new Date().getFullYear(),
       meetingSchedule: input.meetingSchedule,
@@ -1171,12 +1192,27 @@ export class DemoDataAdapter implements DataAdapter {
       });
   }
 
+  async listAllMemberships(): Promise<ClubMembership[]> {
+    return this.memberships.map((m) => {
+      const user = this.users.find((u) => u.id === m.userId);
+      const club = this.clubs.find((c) => c.id === m.clubId);
+      return {
+        ...m,
+        userName: user?.name || m.userName,
+        userEmail: user?.email || m.userEmail,
+        clubName: club?.name || m.clubName,
+      };
+    });
+  }
+
   async upsertClubMembership(input: {
     clubId: string;
     userId: string;
     role: ClubMembership['role'];
     title: string;
     permissions: CoreMemberPermission[];
+    assignedByUserId?: string;
+    strictInsert?: boolean;
   }): Promise<ClubMembership> {
     const club = this.clubs.find((c) => c.id === input.clubId);
     const user = this.users.find((u) => u.id === input.userId);
@@ -1199,6 +1235,9 @@ export class DemoDataAdapter implements DataAdapter {
       (m) => m.clubId === input.clubId && m.userId === input.userId,
     );
     if (existing) {
+      if (input.strictInsert) {
+        throw new ConflictError(`${user.name} is already a member of ${club.name}`);
+      }
       existing.role = input.role;
       existing.title = input.title;
       existing.permissions = effectivePermissions;
@@ -1228,13 +1267,14 @@ export class DemoDataAdapter implements DataAdapter {
     updates: {
       role?: ClubMembership['role'];
       title?: string;
-      permissions: CoreMemberPermission[];
+      permissions?: CoreMemberPermission[];
     },
   ): Promise<ClubMembership | null> {
     const membership = this.memberships.find(
       (m) => m.id === membershipId && m.clubId === clubId,
     );
     if (!membership) return null;
+    const prevRole = membership.role;
     if (updates.role) membership.role = updates.role;
     if (updates.title) membership.title = updates.title;
     membership.permissions =
@@ -1247,7 +1287,11 @@ export class DemoDataAdapter implements DataAdapter {
             'SUBMIT_EVENT_REPORTS',
             'SUBMIT_FINANCE_REPORTS',
           ]
-        : [...updates.permissions];
+        : updates.permissions !== undefined
+          ? [...updates.permissions]
+          : prevRole === 'club_admin'
+            ? []
+            : [...membership.permissions];
     return {...membership};
   }
 
@@ -1265,10 +1309,17 @@ export class DemoDataAdapter implements DataAdapter {
   }
 
   async followClub(userId: string, clubId: string): Promise<ClubFollow> {
-    const club = this.clubs.find((c) => c.id === clubId && c.status === 'active');
-    if (!club) throw new NotFoundError('Active club not found');
+    const club = this.clubs.find((c) => c.id === clubId || c.slug === clubId);
+    if (!club) throw new NotFoundError('Club not found');
+    if (club.status !== 'active') {
+      throw new BusinessRuleError(
+        'CLUB_NOT_ACTIVE',
+        `Cannot follow ${club.name} because its status is ${club.status.replace('_', ' ')}`,
+        {status: club.status},
+      );
+    }
 
-    const already = this.follows.find((f) => f.userId === userId && f.clubId === clubId);
+    const already = this.follows.find((f) => f.userId === userId && f.clubId === club.id);
     if (already) {
       throw new ConflictError('You are already following this club');
     }
@@ -1285,7 +1336,7 @@ export class DemoDataAdapter implements DataAdapter {
     const follow: ClubFollow = {
       id: `fol-${Date.now()}`,
       userId,
-      clubId,
+      clubId: club.id,
       followedAt: new Date().toISOString(),
     };
     this.follows.push(follow);

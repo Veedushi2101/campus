@@ -4,9 +4,16 @@ import type {CoreMemberPermission} from '../../../shared/constants/permissions.t
 import {useAuth, type WorkspaceContextType} from '../../context/AuthContext.tsx';
 
 export const RequireAuthRoute: React.FC<{children: React.ReactNode}> = ({children}) => {
-  const {isAuthenticated} = useAuth();
+  const {isAuthenticated, isInitializing} = useAuth();
   const location = useLocation();
 
+  if (isInitializing) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center text-sm text-slate-500">
+        Loading workspace session...
+      </div>
+    );
+  }
   if (!isAuthenticated) {
     return <Navigate to="/login" state={{from: location.pathname}} replace />;
   }
@@ -18,8 +25,15 @@ export const RequireContextRoute: React.FC<{
   requiredPermission?: CoreMemberPermission;
   children: React.ReactNode;
 }> = ({allowedContexts, requiredPermission, children}) => {
-  const {isAuthenticated, activeContext, hasPermission} = useAuth();
+  const {isAuthenticated, isInitializing, activeContext, hasPermission} = useAuth();
 
+  if (isInitializing) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center text-sm text-slate-500">
+        Loading workspace permissions...
+      </div>
+    );
+  }
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }

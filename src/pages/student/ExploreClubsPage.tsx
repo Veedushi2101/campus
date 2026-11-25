@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {AlertCircle, Check, Compass, Search, UserMinus, UserPlus} from 'lucide-react';
 import {Link} from 'react-router-dom';
@@ -7,8 +7,10 @@ import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {Button} from '../../components/ui/Button.tsx';
 import {Card} from '../../components/ui/FormControls.tsx';
 import {ClubLogo, EmptyState, LoadingSkeleton} from '../../components/ui/Feedback.tsx';
+import {PaginationBar} from '../../components/ui/PaginationBar.tsx';
 import {useAuth} from '../../context/AuthContext.tsx';
 import {useToast} from '../../context/ToastContext.tsx';
+import {useDebouncedValue} from '../../hooks/useDebouncedValue.ts';
 
 export const ExploreClubsPage: React.FC = () => {
   const {followedClubIds, refreshSession, isAuthenticated} = useAuth();
@@ -18,12 +20,28 @@ export const ExploreClubsPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All');
   const [sortBy, setSortBy] = useState('followers');
+  const [page, setPage] = useState(1);
   const [limitNotice, setLimitNotice] = useState<string | null>(null);
 
-  const {data: clubs = [], isLoading} = useQuery({
-    queryKey: ['clubs', search, category, sortBy],
-    queryFn: () => apiClient.listClubs({search, category, sortBy}),
+  const debouncedSearch = useDebouncedValue(search, 250);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, category, sortBy]);
+
+  const {data: clubsPage, isLoading} = useQuery({
+    queryKey: ['clubs-paginated', debouncedSearch, category, sortBy, page],
+    queryFn: () =>
+      apiClient.listClubsPaginated({
+        search: debouncedSearch,
+        category,
+        sortBy,
+        page,
+        pageSize: 12,
+      }),
   });
+
+  const clubs = clubsPage?.items || [];
 
   const {data: followedClubs = []} = useQuery({
     queryKey: ['followed-clubs'],
@@ -38,6 +56,7 @@ export const ExploreClubsPage: React.FC = () => {
       await refreshSession();
       await Promise.all([
         queryClient.invalidateQueries({queryKey: ['clubs']}),
+        queryClient.invalidateQueries({queryKey: ['clubs-paginated']}),
         queryClient.invalidateQueries({queryKey: ['hall-of-fame']}),
         queryClient.invalidateQueries({queryKey: ['followed-clubs']}),
         queryClient.invalidateQueries({queryKey: ['club']}),
@@ -58,6 +77,7 @@ export const ExploreClubsPage: React.FC = () => {
       await refreshSession();
       await Promise.all([
         queryClient.invalidateQueries({queryKey: ['clubs']}),
+        queryClient.invalidateQueries({queryKey: ['clubs-paginated']}),
         queryClient.invalidateQueries({queryKey: ['hall-of-fame']}),
         queryClient.invalidateQueries({queryKey: ['followed-clubs']}),
         queryClient.invalidateQueries({queryKey: ['club']}),
@@ -188,75 +208,80 @@ export const ExploreClubsPage: React.FC = () => {
           }
         />
       ) : (
-        <div className="grid gap-5 md:grid-cols-2">
-          {clubs.map((club) => {
-            const isFollowing = followedClubIds.includes(club.id);
-            const busy =
-              (followMutation.isPending && followMutation.variables === club.id) ||
-              (unfollowMutation.isPending && unfollowMutation.variables === club.id);
+        <div className="space-y-4">
+          <div className="grid gap-5 md:grid-cols-2">
+            {clubs.map((club) => {
+              const isFollowing = followedClubIds.includes(club.id);
+              const busy =
+                (followMutation.isPending && followMutation.variables === club.id) ||
+                (unfollowMutation.isPending && unfollowMutation.variables === club.id);
 
-            return (
-              <Card key={club.id} className="flex flex-col justify-between p-6">
-                <div>
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex items-start gap-3.5 min-w-0">
-                      <ClubLogo name={club.name} logoUrl={club.logoUrl} size="md" />
-                      <div className="min-w-0">
-                        <Link
-                          to={`/app/student/clubs/${club.id}`}
-                          className="font-display text-base font-semibold text-slate-900 hover:text-violet-700"
-                        >
-                          {club.name}
-                        </Link>
-                        <p className="mt-0.5 text-xs text-slate-500">
-                          {club.category} ·{' '}
-                          <span className="font-mono tabular-nums">{club.followerCount}</span>{' '}
-                          followers ·{' '}
-                          <span className="font-mono tabular-nums">
-                            {club.upcomingEventsCount}
-                          </span>{' '}
-                          events
-                        </p>
+              return (
+                <Card key={club.id} className="flex flex-col justify-between p-6">
+                  <div>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-start gap-3.5 min-w-0">
+                        <ClubLogo name={club.name} logoUrl={club.logoUrl} size="md" />
+                        <div className="min-w-0">
+                          <Link
+                            to={`/app/student/clubs/${club.id}`}
+                            className="font-display text-base font-semibold text-slate-900 hover:text-violet-700"
+                          >
+                            {club.name}
+                          </Link>
+                          <p className="mt-0.5 text-xs text-slate-500">
+                            {club.category} ·{' '}
+                            <span className="font-mono tabular-nums">{club.followerCount}</span>{' '}
+                            followers ·{' '}
+                            <span className="font-mono tabular-nums">
+                              {club.upcomingEventsCount}
+                            </span>{' '}
+                            events
+                          </p>
+                        </div>
                       </div>
                     </div>
+                    <p className="mt-4 text-sm text-slate-600 leading-relaxed">{club.tagline}</p>
                   </div>
-                  <p className="mt-4 text-sm text-slate-600 leading-relaxed">{club.tagline}</p>
-                </div>
 
-                <div className="mt-6 flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
-                  <Link
-                    to={`/app/student/clubs/${club.id}`}
-                    className="text-xs font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap"
-                  >
-                    View Club Profile
-                  </Link>
+                  <div className="mt-6 flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
+                    <Link
+                      to={`/app/student/clubs/${club.id}`}
+                      className="text-xs font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap"
+                    >
+                      View Club Profile
+                    </Link>
 
-                  {isFollowing ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      loading={busy}
-                      onClick={() => unfollowMutation.mutate(club.id)}
-                    >
-                      <Check className="h-3.5 w-3.5 text-emerald-600" />
-                      Following
-                      <UserMinus className="h-3.5 w-3.5 text-slate-400" />
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant={atLimit ? 'outline' : 'primary'}
-                      loading={busy}
-                      onClick={() => followMutation.mutate(club.id)}
-                    >
-                      <UserPlus className="h-3.5 w-3.5" />
-                      {atLimit ? 'Limit Reached (2/2)' : 'Follow Club'}
-                    </Button>
-                  )}
-                </div>
-              </Card>
-            );
-          })}
+                    {isFollowing ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        loading={busy}
+                        onClick={() => unfollowMutation.mutate(club.id)}
+                      >
+                        <Check className="h-3.5 w-3.5 text-emerald-600" />
+                        Following
+                        <UserMinus className="h-3.5 w-3.5 text-slate-400" />
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant={atLimit ? 'outline' : 'primary'}
+                        loading={busy}
+                        onClick={() => followMutation.mutate(club.id)}
+                      >
+                        <UserPlus className="h-3.5 w-3.5" />
+                        {atLimit ? 'Limit Reached (2/2)' : 'Follow Club'}
+                      </Button>
+                    )}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+          <Card className="overflow-hidden">
+            <PaginationBar pagination={clubsPage?.pagination} onPageChange={setPage} />
+          </Card>
         </div>
       )}
     </div>

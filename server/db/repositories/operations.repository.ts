@@ -1,22 +1,31 @@
-import {and, desc, eq, sql} from 'drizzle-orm';
+import {and, asc, desc, eq, ilike, or, sql, type SQL} from 'drizzle-orm';
 import type {
   AdminDashboardStats,
   AttendanceRecord,
   AuditLogEntry,
   EventReport,
   FinancialReport,
+  FormAnswerValue,
   NotificationItem,
+  PaginatedResult,
   Registration,
   SystemSettings,
 } from '../../../shared/types/domain.ts';
 import {MAX_FOLLOWED_CLUBS} from '../../config/constants.ts';
-import {BusinessRuleError, ConflictError, NotFoundError} from '../../shared/errors/AppError.ts';
+import {publicReadCache} from '../../shared/cache/publicReadCache.ts';
+import {
+  BusinessRuleError,
+  ConflictError,
+  NotFoundError,
+} from '../../shared/errors/AppError.ts';
+import {generateOpaqueQrToken} from '../../shared/utils/crypto.ts';
 import {withRlsTransaction} from '../index.ts';
 import {
   attendanceRecords,
   auditLogs,
   clubs,
   eventForms,
+  eventFormVersions,
   eventReports,
   events,
   financeLineItems,
@@ -46,16 +55,17 @@ export class OperationsRepository {
     studentId: string;
     studentName: string;
     studentEmail: string;
-    answers: Record<string, string | boolean | number>;
+    answers: Record<string, FormAnswerValue>;
     qrToken: string;
+    formVersion?: number;
+    formVersionId?: string | null;
   }): Promise<Registration> {
     if (!isUuid(input.eventId) || !isUuid(input.studentId)) {
       throw new NotFoundError('Event or student record not found');
     }
 
-    return withRlsTransaction('registrations.create', async (tx) => {
-      // Acquire an exclusive transaction-scoped advisory lock on this event ID so concurrent
-      // registrations serialize cleanly without requiring student UPDATE RLS privileges on `events`
+    const registration = await withRlsTransaction('registrations.create', async (tx) => {
+      // Exclusive transaction-scoped advisory lock guarantees atomic capacity & waitlist ordering
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(hashtext(${`campusverse_event_reg:${input.eventId}`}))`,
       );
@@ -66,19 +76,36 @@ export class OperationsRepository {
         title: string;
         venue: string;
         starts_at: Date;
+        registration_opens_at: Date | null;
+        registration_deadline: Date;
         capacity: number;
         registered_count: number;
         status: string;
       }>(
-        sql`SELECT id, club_id, title, venue, starts_at, capacity, registered_count, status FROM public.events WHERE id = ${input.eventId}`,
+        sql`SELECT id, club_id, title, venue, starts_at, registration_opens_at, registration_deadline, capacity, registered_count, status FROM public.events WHERE id = ${input.eventId}`,
       );
 
       const ev = lockedEvents[0];
       if (!ev) throw new NotFoundError('Event not found');
-      if (ev.status !== 'published') {
+
+      if (ev.status !== 'published' && ev.status !== 'registration_open') {
         throw new BusinessRuleError(
           'EVENT_NOT_OPEN',
-          'Registrations are only allowed for published events',
+          `Registrations are not currently open (event status: ${ev.status.replace('_', ' ')})`,
+        );
+      }
+
+      const now = new Date();
+      if (ev.registration_opens_at && now < new Date(ev.registration_opens_at)) {
+        throw new BusinessRuleError(
+          'REGISTRATION_NOT_OPEN_YET',
+          `Registration opens at ${new Date(ev.registration_opens_at).toISOString()}`,
+        );
+      }
+      if (ev.registration_deadline && now > new Date(ev.registration_deadline)) {
+        throw new BusinessRuleError(
+          'REGISTRATION_DEADLINE_PASSED',
+          'Registration deadline for this event has passed',
         );
       }
 
@@ -99,11 +126,29 @@ export class OperationsRepository {
 
       const status = ev.registered_count >= ev.capacity ? 'waitlisted' : 'confirmed';
 
-      const [formRow] = await tx
-        .select({version: eventForms.version})
-        .from(eventForms)
-        .where(eq(eventForms.eventId, input.eventId))
-        .limit(1);
+      let resolvedVersion = input.formVersion ?? 1;
+      let resolvedVersionId = input.formVersionId ?? null;
+
+      if (!resolvedVersionId) {
+        const [latestSnapshot] = await tx
+          .select({id: eventFormVersions.id, version: eventFormVersions.version})
+          .from(eventFormVersions)
+          .where(eq(eventFormVersions.eventId, input.eventId))
+          .orderBy(desc(eventFormVersions.version))
+          .limit(1);
+
+        if (latestSnapshot) {
+          resolvedVersion = latestSnapshot.version;
+          resolvedVersionId = latestSnapshot.id;
+        } else {
+          const [formRow] = await tx
+            .select({version: eventForms.version})
+            .from(eventForms)
+            .where(eq(eventForms.eventId, input.eventId))
+            .limit(1);
+          resolvedVersion = formRow?.version ?? 1;
+        }
+      }
 
       const [clubRow] = await tx
         .select({name: clubs.name})
@@ -114,20 +159,56 @@ export class OperationsRepository {
       const qrTokenHash = hashSha256(input.qrToken);
 
       try {
-        const [inserted] = await tx
-          .insert(registrations)
-          .values({
-            eventId: input.eventId,
-            userId: input.studentId,
-            formVersion: formRow?.version ?? 1,
-            status,
-            answers: input.answers,
-            qrToken: input.qrToken,
-            qrTokenHash,
-          })
-          .returning();
+        let savedRow: typeof registrations.$inferSelect;
+        if (existing && existing.status === 'cancelled') {
+          const [reactivated] = await tx
+            .update(registrations)
+            .set({
+              formVersion: resolvedVersion,
+              formVersionId: resolvedVersionId,
+              status,
+              answers: input.answers,
+              qrToken: input.qrToken,
+              qrTokenHash,
+              cancelledAt: null,
+              submittedAt: now,
+            })
+            .where(eq(registrations.id, existing.id))
+            .returning();
+          savedRow = reactivated;
+        } else {
+          const [inserted] = await tx
+            .insert(registrations)
+            .values({
+              eventId: input.eventId,
+              userId: input.studentId,
+              formVersion: resolvedVersion,
+              formVersionId: resolvedVersionId,
+              status,
+              answers: input.answers,
+              qrToken: input.qrToken,
+              qrTokenHash,
+            })
+            .returning();
+          savedRow = inserted;
+        }
 
-        return mapRegistrationRow(inserted, {
+        let waitlistPosition: number | null = null;
+        if (status === 'waitlisted') {
+          const [posRow] = await tx
+            .select({count: sql<number>`count(*)::int`})
+            .from(registrations)
+            .where(
+              and(
+                eq(registrations.eventId, input.eventId),
+                eq(registrations.status, 'waitlisted'),
+                sql`${registrations.submittedAt} <= (SELECT r_self.submitted_at FROM public.registrations r_self WHERE r_self.id = ${savedRow.id})`,
+              ),
+            );
+          waitlistPosition = Math.max(1, posRow?.count ?? 1);
+        }
+
+        return mapRegistrationRow(savedRow, {
           eventTitle: ev.title,
           eventStartTime: new Date(ev.starts_at).toISOString(),
           eventVenue: ev.venue,
@@ -136,6 +217,7 @@ export class OperationsRepository {
           studentName: input.studentName,
           studentEmail: input.studentEmail,
           qrUsedAt: null,
+          waitlistPosition,
         });
       } catch (err: unknown) {
         if (isPgUniqueViolation(err)) {
@@ -144,32 +226,177 @@ export class OperationsRepository {
         throw err;
       }
     });
+
+    publicReadCache.invalidateEvents();
+    return registration;
   }
 
-  async listRegistrationsForEvent(eventId: string): Promise<Registration[]> {
-    if (!isUuid(eventId)) return [];
-    return withRlsTransaction('registrations.forEvent', async (tx) => {
-      const rows = await tx
+  async cancelRegistration(
+    eventId: string,
+    studentId: string,
+    registrationId?: string,
+  ): Promise<{
+    cancelled: Registration;
+    promotedUserId?: string | null;
+    promotedRegistrationId?: string | null;
+  }> {
+    if (!isUuid(eventId) || !isUuid(studentId)) {
+      throw new NotFoundError('Registration not found');
+    }
+
+    const result = await withRlsTransaction('registrations.cancel', async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext(${`campusverse_event_reg:${eventId}`}))`,
+      );
+
+      const conditions = [
+        eq(registrations.eventId, eventId),
+        eq(registrations.userId, studentId),
+      ];
+      if (registrationId && isUuid(registrationId)) {
+        conditions.push(eq(registrations.id, registrationId));
+      }
+
+      const [existing] = await tx
+        .select()
+        .from(registrations)
+        .where(and(...conditions))
+        .limit(1);
+
+      if (!existing) throw new NotFoundError('Registration not found');
+      if (existing.status === 'cancelled') {
+        throw new ConflictError('This registration has already been cancelled');
+      }
+      if (existing.status === 'attended') {
+        throw new BusinessRuleError(
+          'CANNOT_CANCEL_ATTENDED',
+          'Checked-in registrations cannot be cancelled',
+        );
+      }
+
+      const wasConfirmed = existing.status === 'confirmed';
+      const revokedToken = `REVOKED-${generateOpaqueQrToken()}`;
+
+      const [cancelledRow] = await tx
+        .update(registrations)
+        .set({
+          status: 'cancelled',
+          cancelledAt: new Date(),
+          qrToken: revokedToken,
+          qrTokenHash: hashSha256(revokedToken),
+        })
+        .where(eq(registrations.id, existing.id))
+        .returning();
+
+      let promotedRegistrationId: string | null = null;
+      let promotedUserId: string | null = null;
+
+      if (wasConfirmed) {
+        const promoRows = await tx.execute<{
+          promoted_registration_id: string;
+          promoted_user_id: string;
+        }>(sql`SELECT promoted_registration_id, promoted_user_id FROM public.promote_next_waitlisted_registration(${eventId})`);
+
+        if (promoRows[0]) {
+          promotedRegistrationId = promoRows[0].promoted_registration_id;
+          promotedUserId = promoRows[0].promoted_user_id;
+        }
+      }
+
+      const [metaRow] = await tx
         .select({
-          reg: registrations,
           studentName: users.displayName,
           studentEmail: users.email,
-          evTitle: events.title,
-          evStartsAt: events.startsAt,
-          evVenue: events.venue,
+          eventTitle: events.title,
+          eventStartTime: events.startsAt,
+          eventVenue: events.venue,
           clubId: events.clubId,
           clubName: clubs.name,
-          scannedAt: attendanceRecords.scannedAt,
         })
-        .from(registrations)
-        .innerJoin(users, eq(registrations.userId, users.id))
-        .innerJoin(events, eq(registrations.eventId, events.id))
+        .from(events)
         .innerJoin(clubs, eq(events.clubId, clubs.id))
-        .leftJoin(attendanceRecords, eq(attendanceRecords.registrationId, registrations.id))
-        .where(eq(registrations.eventId, eventId))
-        .orderBy(desc(registrations.submittedAt));
+        .innerJoin(users, eq(users.id, studentId))
+        .where(eq(events.id, eventId))
+        .limit(1);
 
-      return rows.map((r) =>
+      return {
+        cancelled: mapRegistrationRow(cancelledRow, {
+          studentName: metaRow?.studentName,
+          studentEmail: metaRow?.studentEmail,
+          eventTitle: metaRow?.eventTitle,
+          eventStartTime: metaRow?.eventStartTime.toISOString(),
+          eventVenue: metaRow?.eventVenue,
+          clubId: metaRow?.clubId,
+          clubName: metaRow?.clubName,
+          qrUsedAt: null,
+        }),
+        promotedRegistrationId,
+        promotedUserId,
+      };
+    });
+
+    publicReadCache.invalidateEvents();
+    return result;
+  }
+
+  async listRegistrationsForEventPaginated(
+    eventId: string,
+    opts?: {page?: number; pageSize?: number; search?: string; status?: string},
+  ): Promise<PaginatedResult<Registration>> {
+    if (!isUuid(eventId)) {
+      return {items: [], pagination: {total: 0, page: 1, pageSize: 25, totalPages: 1}};
+    }
+    const page = Math.max(1, opts?.page ?? 1);
+    const pageSize = Math.min(200, Math.max(1, opts?.pageSize ?? 25));
+
+    return withRlsTransaction('registrations.forEventPaginated', async (tx) => {
+      const conditions: SQL[] = [eq(registrations.eventId, eventId)];
+      if (opts?.status && opts.status !== 'All') {
+        conditions.push(eq(registrations.status, opts.status));
+      }
+      if (opts?.search?.trim()) {
+        const pattern = `%${opts.search.trim()}%`;
+        const searchCond = or(
+          ilike(users.displayName, pattern),
+          ilike(users.email, pattern),
+          ilike(registrations.qrToken, pattern),
+        );
+        if (searchCond) conditions.push(searchCond);
+      }
+
+      const whereClause = and(...conditions);
+
+      const [countRows, rows] = await Promise.all([
+        tx
+          .select({count: sql<number>`count(*)::int`})
+          .from(registrations)
+          .innerJoin(users, eq(registrations.userId, users.id))
+          .where(whereClause),
+        tx
+          .select({
+            reg: registrations,
+            studentName: users.displayName,
+            studentEmail: users.email,
+            evTitle: events.title,
+            evStartsAt: events.startsAt,
+            evVenue: events.venue,
+            clubId: events.clubId,
+            clubName: clubs.name,
+            scannedAt: attendanceRecords.scannedAt,
+          })
+          .from(registrations)
+          .innerJoin(users, eq(registrations.userId, users.id))
+          .innerJoin(events, eq(registrations.eventId, events.id))
+          .innerJoin(clubs, eq(events.clubId, clubs.id))
+          .leftJoin(attendanceRecords, eq(attendanceRecords.registrationId, registrations.id))
+          .where(whereClause)
+          .orderBy(desc(registrations.submittedAt))
+          .limit(pageSize)
+          .offset((page - 1) * pageSize),
+      ]);
+
+      const total = countRows[0]?.count ?? 0;
+      const items = rows.map((r) =>
         mapRegistrationRow(r.reg, {
           studentName: r.studentName,
           studentEmail: r.studentEmail,
@@ -181,7 +408,22 @@ export class OperationsRepository {
           qrUsedAt: r.scannedAt ? r.scannedAt.toISOString() : null,
         }),
       );
+
+      return {
+        items,
+        pagination: {
+          total,
+          page,
+          pageSize,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        },
+      };
     });
+  }
+
+  async listRegistrationsForEvent(eventId: string): Promise<Registration[]> {
+    const res = await this.listRegistrationsForEventPaginated(eventId, {page: 1, pageSize: 500});
+    return res.items;
   }
 
   async listRegistrationsForStudent(studentId: string): Promise<Registration[]> {
@@ -207,6 +449,19 @@ export class OperationsRepository {
         .where(eq(registrations.userId, studentId))
         .orderBy(desc(registrations.submittedAt));
 
+      const waitlistEventIds = Array.from(
+        new Set(rows.filter((r) => r.reg.status === 'waitlisted').map((r) => r.reg.eventId)),
+      );
+      const waitlistOrderByRegId = new Map<string, number>();
+      for (const evId of waitlistEventIds) {
+        const wlRows = await tx
+          .select({id: registrations.id})
+          .from(registrations)
+          .where(and(eq(registrations.eventId, evId), eq(registrations.status, 'waitlisted')))
+          .orderBy(asc(registrations.submittedAt));
+        wlRows.forEach((w, idx) => waitlistOrderByRegId.set(w.id, idx + 1));
+      }
+
       return rows.map((r) =>
         mapRegistrationRow(r.reg, {
           studentName: r.studentName,
@@ -217,6 +472,7 @@ export class OperationsRepository {
           clubId: r.clubId,
           clubName: r.clubName,
           qrUsedAt: r.scannedAt ? r.scannedAt.toISOString() : null,
+          waitlistPosition: waitlistOrderByRegId.get(r.reg.id) ?? null,
         }),
       );
     });
@@ -307,6 +563,7 @@ export class OperationsRepository {
     studentCode: string;
     qrToken: string;
     method: 'qr_scan' | 'manual_override';
+    manualReason?: string;
     checkedInBy: string;
     scannedByUserId?: string;
   }): Promise<AttendanceRecord> {
@@ -314,18 +571,43 @@ export class OperationsRepository {
       throw new NotFoundError('Registration or event not found');
     }
 
-    return withRlsTransaction('attendance.record', async (tx) => {
-      // Pessimistic row lock on the registration prevents concurrent double check-in races
-      const lockedRegs = await tx.execute<{id: string; status: string}>(
-        sql`SELECT id, status FROM public.registrations WHERE id = ${input.registrationId} FOR UPDATE`,
+    const record = await withRlsTransaction('attendance.record', async (tx) => {
+      const [ev] = await tx
+        .select({id: events.id, status: events.status})
+        .from(events)
+        .where(eq(events.id, input.eventId))
+        .limit(1);
+      if (!ev) throw new NotFoundError('Event not found');
+      if (ev.status === 'cancelled' || ev.status === 'draft') {
+        throw new BusinessRuleError(
+          'EVENT_NOT_CHECKIN_ELIGIBLE',
+          `Check-in is not allowed while event status is ${ev.status}`,
+        );
+      }
+
+      // Pessimistic row lock on registration prevents concurrent double check-in races
+      const lockedRegs = await tx.execute<{id: string; status: string; event_id: string}>(
+        sql`SELECT id, status, event_id FROM public.registrations WHERE id = ${input.registrationId} FOR UPDATE`,
       );
       if (!lockedRegs[0]) {
         throw new NotFoundError('Registration not found');
+      }
+      if (lockedRegs[0].event_id !== input.eventId) {
+        throw new BusinessRuleError(
+          'WRONG_EVENT_TICKET',
+          'This registration does not belong to the selected event',
+        );
       }
       if (lockedRegs[0].status === 'cancelled') {
         throw new BusinessRuleError(
           'REGISTRATION_CANCELLED',
           'Cancelled registrations cannot be checked in',
+        );
+      }
+      if (lockedRegs[0].status === 'waitlisted') {
+        throw new BusinessRuleError(
+          'REGISTRATION_WAITLISTED',
+          'Waitlisted registrations cannot be checked in until a confirmed seat opens',
         );
       }
 
@@ -350,6 +632,8 @@ export class OperationsRepository {
             scannedBy: isUuid(input.scannedByUserId) ? input.scannedByUserId : null,
             scannedByName: input.checkedInBy,
             scanMethod: input.method,
+            manualReason:
+              input.method === 'manual_override' ? input.manualReason?.trim() || null : null,
           })
           .returning();
 
@@ -367,6 +651,7 @@ export class OperationsRepository {
           studentCode: input.studentCode,
           qrToken: input.qrToken,
           method: input.method,
+          manualReason: inserted.manualReason,
           checkedInBy: inserted.scannedByName,
           checkedInAt: inserted.scannedAt.toISOString(),
         };
@@ -379,37 +664,86 @@ export class OperationsRepository {
         throw err;
       }
     });
+
+    publicReadCache.invalidateEvents();
+    return record;
+  }
+
+  async listAttendanceForEventPaginated(
+    eventId: string,
+    opts?: {page?: number; pageSize?: number; search?: string},
+  ): Promise<PaginatedResult<AttendanceRecord>> {
+    if (!isUuid(eventId)) {
+      return {items: [], pagination: {total: 0, page: 1, pageSize: 25, totalPages: 1}};
+    }
+    const page = Math.max(1, opts?.page ?? 1);
+    const pageSize = Math.min(200, Math.max(1, opts?.pageSize ?? 25));
+
+    return withRlsTransaction('attendance.forEventPaginated', async (tx) => {
+      const conditions: SQL[] = [eq(attendanceRecords.eventId, eventId)];
+      if (opts?.search?.trim()) {
+        const pattern = `%${opts.search.trim()}%`;
+        const searchCond = or(
+          ilike(users.displayName, pattern),
+          ilike(users.studentId, pattern),
+          ilike(attendanceRecords.scannedByName, pattern),
+        );
+        if (searchCond) conditions.push(searchCond);
+      }
+
+      const whereClause = and(...conditions);
+
+      const [countRows, rows] = await Promise.all([
+        tx
+          .select({count: sql<number>`count(*)::int`})
+          .from(attendanceRecords)
+          .innerJoin(registrations, eq(attendanceRecords.registrationId, registrations.id))
+          .innerJoin(users, eq(registrations.userId, users.id))
+          .where(whereClause),
+        tx
+          .select({
+            att: attendanceRecords,
+            reg: registrations,
+            studentName: users.displayName,
+            studentCode: users.studentId,
+          })
+          .from(attendanceRecords)
+          .innerJoin(registrations, eq(attendanceRecords.registrationId, registrations.id))
+          .innerJoin(users, eq(registrations.userId, users.id))
+          .where(whereClause)
+          .orderBy(desc(attendanceRecords.scannedAt))
+          .limit(pageSize)
+          .offset((page - 1) * pageSize),
+      ]);
+
+      const total = countRows[0]?.count ?? 0;
+      return {
+        items: rows.map((r) => ({
+          id: r.att.id,
+          eventId: r.att.eventId,
+          registrationId: r.att.registrationId,
+          studentId: r.reg.userId,
+          studentName: r.studentName,
+          studentCode: r.studentCode || r.reg.userId,
+          qrToken: r.reg.qrToken,
+          method: r.att.scanMethod === 'manual_override' ? 'manual_override' : 'qr_scan',
+          manualReason: r.att.manualReason,
+          checkedInBy: r.att.scannedByName,
+          checkedInAt: r.att.scannedAt.toISOString(),
+        })),
+        pagination: {
+          total,
+          page,
+          pageSize,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        },
+      };
+    });
   }
 
   async listAttendanceForEvent(eventId: string): Promise<AttendanceRecord[]> {
-    if (!isUuid(eventId)) return [];
-    return withRlsTransaction('attendance.forEvent', async (tx) => {
-      const rows = await tx
-        .select({
-          att: attendanceRecords,
-          reg: registrations,
-          studentName: users.displayName,
-          studentCode: users.studentId,
-        })
-        .from(attendanceRecords)
-        .innerJoin(registrations, eq(attendanceRecords.registrationId, registrations.id))
-        .innerJoin(users, eq(registrations.userId, users.id))
-        .where(eq(attendanceRecords.eventId, eventId))
-        .orderBy(desc(attendanceRecords.scannedAt));
-
-      return rows.map((r) => ({
-        id: r.att.id,
-        eventId: r.att.eventId,
-        registrationId: r.att.registrationId,
-        studentId: r.reg.userId,
-        studentName: r.studentName,
-        studentCode: r.studentCode || r.reg.userId,
-        qrToken: r.reg.qrToken,
-        method: (r.att.scanMethod === 'manual_override' ? 'manual_override' : 'qr_scan'),
-        checkedInBy: r.att.scannedByName,
-        checkedInAt: r.att.scannedAt.toISOString(),
-      }));
-    });
+    const res = await this.listAttendanceForEventPaginated(eventId, {page: 1, pageSize: 500});
+    return res.items;
   }
 
   async upsertEventReport(report: Omit<EventReport, 'id' | 'submittedAt'>): Promise<EventReport> {
@@ -505,7 +839,6 @@ export class OperationsRepository {
       throw new NotFoundError('Event or club not found');
     }
 
-    // Integer-cent arithmetic eliminates floating-point rounding drift
     const collectionsCents = report.lineItems
       .filter((i) => i.type === 'collection')
       .reduce((sum, i) => sum + toCents(i.amount), 0);
@@ -700,7 +1033,7 @@ export class OperationsRepository {
       const [eventStats] = await tx
         .select({
           totalEvents: sql<number>`count(*)::int`,
-          upcomingEvents: sql<number>`count(*) FILTER (WHERE ${events.status} = 'published')::int`,
+          upcomingEvents: sql<number>`count(*) FILTER (WHERE ${events.status} IN ('published', 'registration_open'))::int`,
         })
         .from(events);
 
@@ -787,9 +1120,9 @@ export class OperationsRepository {
             ? val.allowStudentEventFeedback
             : true,
         phaseLabel:
-          typeof val.phaseLabel === 'string' && !val.phaseLabel.startsWith('Phase 2')
+          typeof val.phaseLabel === 'string' && !val.phaseLabel.startsWith('Phase 2') && !val.phaseLabel.startsWith('Phase 3')
             ? val.phaseLabel
-            : 'Phase 3 — Live Users, Clubs, Memberships & Hall of Fame',
+            : 'Phase 4 — Leadership, Invitations, Forms, QR Check-in & Performance',
         persistenceMode: 'postgres',
       };
     });

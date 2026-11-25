@@ -18,6 +18,11 @@ export function createFormsRoutes(adapter: DataAdapter): Router {
     validateBody(updateRegistrationFormSchema),
     controller.put,
   );
+  router.post(
+    '/events/:eventId/form/publish',
+    requireEventPermission(adapter, 'MANAGE_FORMS', 'eventId'),
+    controller.publish,
+  );
 
   return router;
 }

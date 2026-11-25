@@ -1,4 +1,4 @@
-import type {Club, ClubDetail, ClubStatus} from '../../../shared/types/domain.ts';
+import type {Club, ClubDetail, ClubStatus, PaginatedResult} from '../../../shared/types/domain.ts';
 import type {DataAdapter} from '../../adapters/DataAdapter.ts';
 import {NotFoundError} from '../../shared/errors/AppError.ts';
 
@@ -10,21 +10,42 @@ export class ClubsService {
     category?: string;
     sortBy?: 'followers' | 'name' | 'events';
   }): Promise<Club[]> {
-    const clubs = await this.adapter.listClubs({
+    return this.adapter.listClubs({
       search: filters?.search,
       category: filters?.category,
+      sortBy: filters?.sortBy,
       includeAllStatuses: false,
     });
+  }
 
-    if (filters?.sortBy === 'name') {
-      return clubs.sort((a, b) => a.name.localeCompare(b.name));
+  async listClubsPaginated(filters?: {
+    search?: string;
+    category?: string;
+    sortBy?: 'followers' | 'name' | 'events';
+    page?: number;
+    pageSize?: number;
+  }): Promise<PaginatedResult<Club>> {
+    if (this.adapter.listClubsPaginated) {
+      return this.adapter.listClubsPaginated({
+        ...filters,
+        includeAllStatuses: false,
+      });
     }
-    if (filters?.sortBy === 'events') {
-      return clubs.sort(
-        (a, b) => b.upcomingEventsCount - a.upcomingEventsCount || a.name.localeCompare(b.name),
-      );
-    }
-    return clubs.sort((a, b) => b.followerCount - a.followerCount || a.name.localeCompare(b.name));
+    const items = await this.listClubs(filters);
+    const page = Math.max(1, filters?.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, filters?.pageSize ?? 24));
+    const total = items.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(page, totalPages);
+    return {
+      items: items.slice((safePage - 1) * pageSize, safePage * pageSize),
+      pagination: {
+        total,
+        page: safePage,
+        pageSize,
+        totalPages,
+      },
+    };
   }
 
   async getClubDetail(clubId: string, viewerUserId?: string): Promise<ClubDetail> {
@@ -37,11 +58,13 @@ export class ClubsService {
     actor: {id: string; name: string},
     input: {
       name: string;
+      slug?: string;
       category: Club['category'];
       tagline: string;
       description: string;
       meetingSchedule: string;
       contactEmail: string;
+      foundedYear?: number;
       status?: ClubStatus;
     },
   ): Promise<Club> {
@@ -57,7 +80,7 @@ export class ClubsService {
       targetType: 'club',
       targetId: club.id,
       targetLabel: club.name,
-      details: `Registered ${club.name} in ${club.category} (status: ${club.status}).`,
+      details: `Registered ${club.name} (${club.slug}) in ${club.category} (status: ${club.status}).`,
     });
     return club;
   }
@@ -72,7 +95,7 @@ export class ClubsService {
     await this.adapter.appendAuditLog({
       actorId: actor.id,
       actorName: actor.name,
-      actorContext: actor.isSuperAdmin ? 'Super Admin' : `Club Admin · ${updated.name}`,
+      actorContext: actor.isSuperAdmin ? 'Super Admin' : `Club Leadership · ${updated.name}`,
       action: 'UPDATED_CLUB_PROFILE',
       targetType: 'club',
       targetId: updated.id,

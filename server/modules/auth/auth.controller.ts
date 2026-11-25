@@ -38,11 +38,19 @@ export class AuthController {
 
   getMe = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const session = await this.service.getSessionMe(
-        req.auth!.user.id,
-        req.auth!.mode,
-        {userAgent: req.headers['user-agent']},
-      );
+      const auth = req.auth!;
+      if (auth.followedClubIds !== undefined) {
+        sendSuccess(res, {
+          user: auth.user,
+          memberships: auth.memberships,
+          followedClubIds: auth.followedClubIds,
+          mode: auth.mode,
+        });
+        return;
+      }
+      const session = await this.service.getSessionMe(auth.user.id, auth.mode, {
+        userAgent: req.headers['user-agent'],
+      });
       sendSuccess(res, session);
     } catch (error) {
       next(error);

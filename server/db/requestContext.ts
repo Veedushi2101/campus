@@ -2,7 +2,13 @@ import {AsyncLocalStorage} from 'node:async_hooks';
 
 export interface DbRequestContext {
   userId: string;
-  globalRole: 'user' | 'super_admin' | 'auth_resolver' | 'system_seed' | 'public';
+  globalRole:
+    | 'user'
+    | 'super_admin'
+    | 'auth_resolver'
+    | 'system_seed'
+    | 'invitation_activator'
+    | 'public';
   requestId?: string;
 }
 

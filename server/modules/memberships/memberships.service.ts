@@ -1,3 +1,4 @@
+import {isClubOfficerRole} from '../../../shared/constants/permissions.ts';
 import type {
   ClubFollow,
   ClubMembership,
@@ -71,8 +72,10 @@ export class MembershipsService {
       permissions: CoreMemberPermission[];
     },
   ): Promise<ClubMembership> {
-    if (input.role === 'club_admin' && !actor.isSuperAdmin) {
-      throw new ForbiddenError('Only a Super Admin can assign Club Admin roles');
+    if (isClubOfficerRole(input.role) && !actor.isSuperAdmin) {
+      throw new ForbiddenError(
+        'Only a Super Admin can assign Club President or Vice President roles',
+      );
     }
 
     const user = input.userId
@@ -102,7 +105,7 @@ export class MembershipsService {
       actorName: actor.name,
       actorContext: actor.isSuperAdmin
         ? 'Super Admin'
-        : `Club Admin · ${membership.clubName || clubId}`,
+        : `Club Leadership · ${membership.clubName || clubId}`,
       action: 'UPSERT_CLUB_MEMBER',
       targetType: 'membership',
       targetId: membership.id,
@@ -128,9 +131,11 @@ export class MembershipsService {
 
     if (
       !actor.isSuperAdmin &&
-      (existing.role === 'club_admin' || updates.role === 'club_admin')
+      (isClubOfficerRole(existing.role) || (updates.role && isClubOfficerRole(updates.role)))
     ) {
-      throw new ForbiddenError('Only a Super Admin can assign or modify Club Admin memberships');
+      throw new ForbiddenError(
+        'Only a Super Admin can assign, promote to, or modify President and Vice President memberships',
+      );
     }
 
     const updated = await this.adapter.updateMembershipPermissions(clubId, membershipId, updates);
@@ -138,7 +143,7 @@ export class MembershipsService {
     await this.adapter.appendAuditLog({
       actorId: actor.id,
       actorName: actor.name,
-      actorContext: actor.isSuperAdmin ? 'Super Admin' : `Club Admin · ${clubId}`,
+      actorContext: actor.isSuperAdmin ? 'Super Admin' : `Club Leadership · ${clubId}`,
       action: 'UPDATED_MEMBER_PERMISSIONS',
       targetType: 'membership',
       targetId: membershipId,
@@ -157,8 +162,10 @@ export class MembershipsService {
     const existing = existingTeam.find((m) => m.id === membershipId);
     if (!existing) throw new NotFoundError('Club membership not found');
 
-    if (!actor.isSuperAdmin && existing.role === 'club_admin') {
-      throw new ForbiddenError('Only a Super Admin can remove a Club Admin');
+    if (!actor.isSuperAdmin && isClubOfficerRole(existing.role)) {
+      throw new ForbiddenError(
+        'Only a Super Admin can remove a Club President or Vice President',
+      );
     }
 
     const removed = await this.adapter.removeClubMembership(clubId, membershipId);
@@ -166,7 +173,7 @@ export class MembershipsService {
     await this.adapter.appendAuditLog({
       actorId: actor.id,
       actorName: actor.name,
-      actorContext: actor.isSuperAdmin ? 'Super Admin' : `Club Admin · ${clubId}`,
+      actorContext: actor.isSuperAdmin ? 'Super Admin' : `Club Leadership · ${clubId}`,
       action: 'REMOVED_CLUB_MEMBER',
       targetType: 'membership',
       targetId: membershipId,

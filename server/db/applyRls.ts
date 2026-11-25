@@ -64,6 +64,7 @@ async function applyRlsAndRole() {
         public.users,
         public.clubs,
         public.club_memberships,
+        public.club_invitations,
         public.club_follows,
         public.events,
         public.event_forms,
@@ -78,8 +79,8 @@ async function applyRlsAndRole() {
         public.hall_of_fame_snapshots,
         public.auth_sessions
       TO campusverse_app;
-      GRANT SELECT, INSERT ON public.audit_logs TO campusverse_app;
-      REVOKE UPDATE, DELETE, TRUNCATE ON public.audit_logs FROM campusverse_app, PUBLIC;
+      GRANT SELECT, INSERT ON public.audit_logs, public.event_form_versions TO campusverse_app;
+      REVOKE UPDATE, DELETE, TRUNCATE ON public.audit_logs, public.event_form_versions FROM campusverse_app, PUBLIC;
     `);
     await sql.unsafe(`
       DO $$

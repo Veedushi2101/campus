@@ -22,7 +22,19 @@ export function createRegistrationsRoutes(adapter: DataAdapter): Router {
     requireEventPermission(adapter, 'VIEW_REGISTRATIONS', 'eventId'),
     controller.listForEvent,
   );
+  router.get(
+    '/events/:eventId/registrations/export',
+    requireEventPermission(adapter, 'VIEW_REGISTRATIONS', 'eventId'),
+    controller.exportCsv,
+  );
+  router.delete(
+    '/events/:eventId/registrations/me',
+    requireAuth,
+    controller.cancelMine,
+  );
   router.get('/registrations/me', requireAuth, controller.listMine);
+  router.get('/users/me/registrations', requireAuth, controller.listMine);
+  router.get('/registrations/:registrationId', requireAuth, controller.getById);
 
   return router;
 }

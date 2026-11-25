@@ -1,14 +1,38 @@
 import React, {useEffect, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
-import {Plus, Save, Trash2} from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  Eye,
+  Plus,
+  Rocket,
+  Save,
+  Trash2,
+  Wrench,
+} from 'lucide-react';
 import {useSearchParams} from 'react-router-dom';
 import type {FormField, FormFieldType} from '../../../shared/types/domain.ts';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {Button} from '../../components/ui/Button.tsx';
-import {Card} from '../../components/ui/FormControls.tsx';
 import {LoadingSkeleton} from '../../components/ui/Feedback.tsx';
+import {Card} from '../../components/ui/FormControls.tsx';
 import {useAuth} from '../../context/AuthContext.tsx';
 import {useToast} from '../../context/ToastContext.tsx';
+
+const CHOICE_TYPES: FormFieldType[] = ['select', 'radio', 'checkboxes'];
+
+const FIELD_TYPE_OPTIONS: Array<{value: FormFieldType; label: string}> = [
+  {value: 'text', label: 'Short Text'},
+  {value: 'textarea', label: 'Long Text'},
+  {value: 'email', label: 'Email'},
+  {value: 'phone', label: 'Phone Number'},
+  {value: 'number', label: 'Number'},
+  {value: 'select', label: 'Dropdown Select'},
+  {value: 'radio', label: 'Radio Choice'},
+  {value: 'checkboxes', label: 'Multiple Checkboxes'},
+  {value: 'checkbox', label: 'Single Checkbox'},
+  {value: 'url', label: 'Website / Portfolio URL'},
+];
 
 export const FormBuilderPage: React.FC = () => {
   const {activeClubId} = useAuth();
@@ -24,6 +48,9 @@ export const FormBuilderPage: React.FC = () => {
 
   const [selectedEventId, setSelectedEventId] = useState(searchParams.get('eventId') || '');
   const [fields, setFields] = useState<FormField[]>([]);
+  const [formTitle, setFormTitle] = useState('');
+  const [formDescription, setFormDescription] = useState('');
+  const [mode, setMode] = useState<'builder' | 'preview'>('builder');
 
   useEffect(() => {
     if (!selectedEventId && events.length > 0) {
@@ -38,17 +65,45 @@ export const FormBuilderPage: React.FC = () => {
   });
 
   useEffect(() => {
-    if (form) setFields(form.fields);
+    if (form) {
+      setFields(form.fields);
+      setFormTitle(form.title || 'Event Registration Form');
+      setFormDescription(form.description || '');
+    }
   }, [form]);
 
   const saveMutation = useMutation({
-    mutationFn: () => apiClient.saveEventForm(selectedEventId, fields),
+    mutationFn: () =>
+      apiClient.saveEventForm(selectedEventId, fields, {
+        title: formTitle.trim() || undefined,
+        description: formDescription.trim() || undefined,
+      }),
     onSuccess: async (saved) => {
       await queryClient.invalidateQueries({queryKey: ['event-form', selectedEventId]});
-      toast.success(`Registration form saved (v${saved.version})`);
+      toast.success(`Draft saved (v${saved.version})`);
     },
     onError: (err) => {
-      toast.error('Failed to save form', err instanceof Error ? err.message : undefined);
+      toast.error('Failed to save form draft', err instanceof Error ? err.message : undefined);
+    },
+  });
+
+  const publishMutation = useMutation({
+    mutationFn: async () => {
+      await apiClient.saveEventForm(selectedEventId, fields, {
+        title: formTitle.trim() || undefined,
+        description: formDescription.trim() || undefined,
+      });
+      return apiClient.publishEventForm(selectedEventId);
+    },
+    onSuccess: async (snapshot) => {
+      await queryClient.invalidateQueries({queryKey: ['event-form', selectedEventId]});
+      toast.success(
+        `Published immutable snapshot v${snapshot.version}`,
+        'New student registrations will record answers against this locked version.',
+      );
+    },
+    onError: (err) => {
+      toast.error('Failed to publish form', err instanceof Error ? err.message : undefined);
     },
   });
 
@@ -56,7 +111,7 @@ export const FormBuilderPage: React.FC = () => {
     setFields((prev) => [
       ...prev,
       {
-        id: `fld-${Date.now()}`,
+        id: `fld-${Date.now()}-${prev.length + 1}`,
         label: 'New Question',
         type: 'text',
         required: false,
@@ -67,6 +122,17 @@ export const FormBuilderPage: React.FC = () => {
 
   const updateField = (idx: number, patch: Partial<FormField>) => {
     setFields((prev) => prev.map((f, i) => (i === idx ? {...f, ...patch} : f)));
+  };
+
+  const moveField = (idx: number, dir: -1 | 1) => {
+    setFields((prev) => {
+      const target = idx + dir;
+      if (target < 0 || target >= prev.length) return prev;
+      const copy = [...prev];
+      const [item] = copy.splice(idx, 1);
+      copy.splice(target, 0, item);
+      return copy;
+    });
   };
 
   const removeField = (idx: number) => {
@@ -83,53 +149,184 @@ export const FormBuilderPage: React.FC = () => {
             Registration Form Builder
           </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Configure custom intake questions and validation rules per event (currently version v
-            {form?.version || 1}).
+            Design 10-type intake schemas, save drafts, and publish immutable form snapshots (draft
+            v{form?.version || 1}
+            {form?.publishedVersion ? ` · published v${form.publishedVersion}` : ''}).
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1">
+            <button
+              type="button"
+              onClick={() => setMode('builder')}
+              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium ${
+                mode === 'builder' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+              }`}
+            >
+              <Wrench className="h-3.5 w-3.5" />
+              Builder
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('preview')}
+              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium ${
+                mode === 'preview' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+              }`}
+            >
+              <Eye className="h-3.5 w-3.5" />
+              Preview
+            </button>
+          </div>
+
           <Button variant="outline" onClick={addField}>
             <Plus className="h-4 w-4" />
             Add Field
           </Button>
           <Button
+            variant="outline"
             loading={saveMutation.isPending}
             disabled={!selectedEventId || fields.length === 0}
             onClick={() => saveMutation.mutate()}
           >
             <Save className="h-4 w-4" />
-            Save Form
+            Save Draft
+          </Button>
+          <Button
+            loading={publishMutation.isPending}
+            disabled={!selectedEventId || fields.length === 0}
+            onClick={() => publishMutation.mutate()}
+          >
+            <Rocket className="h-4 w-4" />
+            Publish Version
           </Button>
         </div>
       </div>
 
-      <Card className="p-4">
-        <label htmlFor="form-builder-event" className="block text-xs font-medium text-slate-500">
-          Target Event
-        </label>
-        <select
-          id="form-builder-event"
-          value={selectedEventId}
-          onChange={(e) => setSelectedEventId(e.target.value)}
-          className="mt-1.5 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
-        >
-          {events.map((ev) => (
-            <option key={ev.id} value={ev.id}>
-              {ev.title} ({ev.status})
-            </option>
-          ))}
-        </select>
+      <Card className="p-4 space-y-4">
+        <div>
+          <label htmlFor="form-builder-event" className="block text-xs font-medium text-slate-500">
+            Target Event
+          </label>
+          <select
+            id="form-builder-event"
+            value={selectedEventId}
+            onChange={(e) => setSelectedEventId(e.target.value)}
+            className="mt-1.5 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
+          >
+            {events.map((ev) => (
+              <option key={ev.id} value={ev.id}>
+                {ev.title} ({ev.status.replace(/_/g, ' ')})
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="block text-xs font-medium text-slate-600">Form Title</label>
+            <input
+              type="text"
+              value={formTitle}
+              onChange={(e) => setFormTitle(e.target.value)}
+              className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-900"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600">
+              Form Instructions (optional)
+            </label>
+            <input
+              type="text"
+              value={formDescription}
+              onChange={(e) => setFormDescription(e.target.value)}
+              placeholder="Guidelines shown to registering students..."
+              className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-900"
+            />
+          </div>
+        </div>
       </Card>
 
       {formLoading ? (
         <LoadingSkeleton rows={3} />
+      ) : mode === 'preview' ? (
+        <Card className="p-6 space-y-4">
+          <div className="border-b border-slate-100 pb-3">
+            <h2 className="font-display text-lg font-semibold text-slate-900">{formTitle}</h2>
+            {formDescription && <p className="mt-1 text-xs text-slate-600">{formDescription}</p>}
+          </div>
+          {fields.map((field) => (
+            <div key={field.id} className="space-y-1.5">
+              {field.type === 'checkbox' ? (
+                <label className="flex items-start gap-2 text-xs text-slate-800">
+                  <input type="checkbox" disabled className="mt-0.5" />
+                  <span>
+                    {field.label}
+                    {field.required ? ' *' : ''}
+                  </span>
+                </label>
+              ) : (
+                <>
+                  <label className="block text-xs font-medium text-slate-800">
+                    {field.label}
+                    {field.required ? ' *' : ''}
+                  </label>
+                  {field.description && (
+                    <p className="text-[11px] text-slate-500">{field.description}</p>
+                  )}
+                  {field.type === 'textarea' ? (
+                    <textarea
+                      disabled
+                      rows={2}
+                      placeholder={field.placeholder}
+                      className="block w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+                    />
+                  ) : field.type === 'select' ? (
+                    <select
+                      disabled
+                      className="block w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+                    >
+                      {(field.options || []).map((opt) => (
+                        <option key={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  ) : field.type === 'radio' ? (
+                    <div className="space-y-1">
+                      {(field.options || []).map((opt) => (
+                        <label key={opt} className="flex items-center gap-2 text-xs text-slate-700">
+                          <input type="radio" disabled name={`preview-${field.id}`} />
+                          <span>{opt}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : field.type === 'checkboxes' ? (
+                    <div className="space-y-1">
+                      {(field.options || []).map((opt) => (
+                        <label key={opt} className="flex items-center gap-2 text-xs text-slate-700">
+                          <input type="checkbox" disabled />
+                          <span>{opt}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <input
+                      disabled
+                      type={field.type === 'number' ? 'number' : 'text'}
+                      placeholder={field.placeholder}
+                      className="block w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs"
+                    />
+                  )}
+                </>
+              )}
+            </div>
+          ))}
+        </Card>
       ) : (
         <div className="space-y-3">
           {fields.map((field, idx) => (
-            <Card key={field.id} className="p-5">
+            <Card key={field.id} className="p-5 space-y-3">
               <div className="grid gap-4 sm:grid-cols-12 sm:items-end">
-                <div className="sm:col-span-5">
+                <div className="sm:col-span-4">
                   <label className="block text-xs font-medium text-slate-700">Field Label</label>
                   <input
                     type="text"
@@ -139,7 +336,7 @@ export const FormBuilderPage: React.FC = () => {
                   />
                 </div>
                 <div className="sm:col-span-3">
-                  <label className="block text-xs font-medium text-slate-700">Type</label>
+                  <label className="block text-xs font-medium text-slate-700">Field Type</label>
                   <select
                     value={field.type}
                     onChange={(e) => {
@@ -147,19 +344,18 @@ export const FormBuilderPage: React.FC = () => {
                       updateField(idx, {
                         type: nextType,
                         options:
-                          nextType === 'select' && !field.options?.length
+                          CHOICE_TYPES.includes(nextType) && !field.options?.length
                             ? ['Option A', 'Option B']
                             : field.options,
                       });
                     }}
                     className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-900"
                   >
-                    <option value="text">Short Text</option>
-                    <option value="textarea">Long Text</option>
-                    <option value="email">Email</option>
-                    <option value="number">Number</option>
-                    <option value="select">Dropdown Select</option>
-                    <option value="checkbox">Checkbox</option>
+                    {FIELD_TYPE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div className="sm:col-span-2">
@@ -172,7 +368,25 @@ export const FormBuilderPage: React.FC = () => {
                     Required
                   </label>
                 </div>
-                <div className="sm:col-span-2 flex justify-end">
+                <div className="sm:col-span-3 flex justify-end gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={idx === 0}
+                    aria-label="Move field up"
+                    onClick={() => moveField(idx, -1)}
+                  >
+                    <ArrowUp className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={idx === fields.length - 1}
+                    aria-label="Move field down"
+                    onClick={() => moveField(idx, 1)}
+                  >
+                    <ArrowDown className="h-3.5 w-3.5" />
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
@@ -180,15 +394,44 @@ export const FormBuilderPage: React.FC = () => {
                     onClick={() => removeField(idx)}
                   >
                     <Trash2 className="h-3.5 w-3.5 text-red-600" />
-                    Delete
                   </Button>
                 </div>
               </div>
 
-              {field.type === 'select' && (
-                <div className="mt-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
                   <label className="block text-xs font-medium text-slate-600">
-                    Dropdown Options (comma-separated)
+                    Helper Description (optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={field.description || ''}
+                    onChange={(e) => updateField(idx, {description: e.target.value})}
+                    placeholder="Shown below the field label"
+                    className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-800"
+                  />
+                </div>
+                {field.type !== 'checkbox' &&
+                  field.type !== 'radio' &&
+                  field.type !== 'checkboxes' && (
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600">
+                        Placeholder
+                      </label>
+                      <input
+                        type="text"
+                        value={field.placeholder || ''}
+                        onChange={(e) => updateField(idx, {placeholder: e.target.value})}
+                        className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-800"
+                      />
+                    </div>
+                  )}
+              </div>
+
+              {CHOICE_TYPES.includes(field.type) && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-600">
+                    Choice Options (comma-separated)
                   </label>
                   <input
                     type="text"
@@ -203,6 +446,92 @@ export const FormBuilderPage: React.FC = () => {
                     }
                     className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-800"
                   />
+                </div>
+              )}
+
+              {(field.type === 'text' ||
+                field.type === 'textarea' ||
+                field.type === 'number') && (
+                <div className="grid gap-3 border-t border-slate-100 pt-3 sm:grid-cols-2">
+                  {field.type === 'number' ? (
+                    <>
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-600">
+                          Min Value
+                        </label>
+                        <input
+                          type="number"
+                          value={field.validationRules?.min ?? ''}
+                          onChange={(e) =>
+                            updateField(idx, {
+                              validationRules: {
+                                ...field.validationRules,
+                                min: e.target.value ? Number(e.target.value) : undefined,
+                              },
+                            })
+                          }
+                          className="mt-1 block w-full rounded-lg border border-slate-200 px-2.5 py-1 text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-600">
+                          Max Value
+                        </label>
+                        <input
+                          type="number"
+                          value={field.validationRules?.max ?? ''}
+                          onChange={(e) =>
+                            updateField(idx, {
+                              validationRules: {
+                                ...field.validationRules,
+                                max: e.target.value ? Number(e.target.value) : undefined,
+                              },
+                            })
+                          }
+                          className="mt-1 block w-full rounded-lg border border-slate-200 px-2.5 py-1 text-xs"
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-600">
+                          Min Length
+                        </label>
+                        <input
+                          type="number"
+                          value={field.validationRules?.minLength ?? ''}
+                          onChange={(e) =>
+                            updateField(idx, {
+                              validationRules: {
+                                ...field.validationRules,
+                                minLength: e.target.value ? Number(e.target.value) : undefined,
+                              },
+                            })
+                          }
+                          className="mt-1 block w-full rounded-lg border border-slate-200 px-2.5 py-1 text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-600">
+                          Max Length
+                        </label>
+                        <input
+                          type="number"
+                          value={field.validationRules?.maxLength ?? ''}
+                          onChange={(e) =>
+                            updateField(idx, {
+                              validationRules: {
+                                ...field.validationRules,
+                                maxLength: e.target.value ? Number(e.target.value) : undefined,
+                              },
+                            })
+                          }
+                          className="mt-1 block w-full rounded-lg border border-slate-200 px-2.5 py-1 text-xs"
+                        />
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </Card>

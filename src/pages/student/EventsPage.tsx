@@ -1,4 +1,4 @@
-import React, {useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
 import {Calendar, MapPin, Search} from 'lucide-react';
 import {Link, useSearchParams} from 'react-router-dom';
@@ -7,6 +7,8 @@ import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {Button} from '../../components/ui/Button.tsx';
 import {Card} from '../../components/ui/FormControls.tsx';
 import {EmptyState, LoadingSkeleton, StatusLabel} from '../../components/ui/Feedback.tsx';
+import {PaginationBar} from '../../components/ui/PaginationBar.tsx';
+import {useDebouncedValue} from '../../hooks/useDebouncedValue.ts';
 
 export const EventsPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -14,22 +16,33 @@ export const EventsPage: React.FC = () => {
   const [category, setCategory] = useState('All');
   const [clubId, setClubId] = useState('All');
   const [upcomingOnly, setUpcomingOnly] = useState(true);
+  const [page, setPage] = useState(1);
+
+  const debouncedSearch = useDebouncedValue(search, 250);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, category, clubId, upcomingOnly]);
 
   const {data: clubs = []} = useQuery({
     queryKey: ['clubs'],
     queryFn: () => apiClient.listClubs(),
   });
 
-  const {data: events = [], isLoading} = useQuery({
-    queryKey: ['events', search, category, clubId, upcomingOnly],
+  const {data: eventsPage, isLoading} = useQuery({
+    queryKey: ['events', debouncedSearch, category, clubId, upcomingOnly, page],
     queryFn: () =>
-      apiClient.listEvents({
-        search,
+      apiClient.listEventsPaginated({
+        search: debouncedSearch,
         category,
         clubId,
         upcomingOnly,
+        page,
+        pageSize: 12,
       }),
   });
+
+  const events = eventsPage?.items || [];
 
   return (
     <div className="space-y-6">
@@ -129,59 +142,68 @@ export const EventsPage: React.FC = () => {
           }
         />
       ) : (
-        <div className="grid gap-5 md:grid-cols-2">
-          {events.map((ev) => (
-            <Card key={ev.id} className="overflow-hidden flex flex-col justify-between">
-              <div className="p-6">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-violet-700">
-                    {ev.clubName} · {ev.category}
-                  </span>
-                  <StatusLabel status={ev.status} />
-                </div>
+        <div className="space-y-4">
+          <div className="grid gap-5 md:grid-cols-2">
+            {events.map((ev) => {
+              const isFull = ev.registeredCount >= ev.capacity;
+              return (
+                <Card key={ev.id} className="overflow-hidden flex flex-col justify-between">
+                  <div className="p-6">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-violet-700">
+                        {ev.clubName} · {ev.category}
+                      </span>
+                      <StatusLabel status={ev.status} />
+                    </div>
 
-                <Link
-                  to={`/app/student/events/${ev.id}`}
-                  className="mt-2 block font-display text-lg font-semibold text-slate-900 hover:text-violet-700"
-                >
-                  {ev.title}
-                </Link>
-                <p className="mt-2 line-clamp-2 text-sm text-slate-600 leading-relaxed">
-                  {ev.description}
-                </p>
+                    <Link
+                      to={`/app/student/events/${ev.id}`}
+                      className="mt-2 block font-display text-lg font-semibold text-slate-900 hover:text-violet-700"
+                    >
+                      {ev.title}
+                    </Link>
+                    <p className="mt-2 line-clamp-2 text-sm text-slate-600 leading-relaxed">
+                      {ev.description}
+                    </p>
 
-                <div className="mt-4 space-y-1.5 text-xs text-slate-500">
-                  <p className="flex items-center gap-2">
-                    <Calendar className="h-3.5 w-3.5 shrink-0" />
-                    <span>
-                      {new Date(ev.startTime).toLocaleDateString()} ·{' '}
-                      {new Date(ev.startTime).toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
+                    <div className="mt-4 space-y-1.5 text-xs text-slate-500">
+                      <p className="flex items-center gap-2">
+                        <Calendar className="h-3.5 w-3.5 shrink-0" />
+                        <span>
+                          {new Date(ev.startTime).toLocaleDateString()} ·{' '}
+                          {new Date(ev.startTime).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      </p>
+                      <p className="flex items-center gap-2">
+                        <MapPin className="h-3.5 w-3.5 shrink-0" />
+                        <span>{ev.venue}</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/60 px-6 py-3.5">
+                    <span className="font-mono text-xs text-slate-600 tabular-nums">
+                      {ev.registeredCount}/{ev.capacity} registered
+                      {isFull ? ' · Waitlist Open' : ''}
+                      {ev.isPaid ? ` · INR ${ev.feeAmount}` : ' · Free'}
                     </span>
-                  </p>
-                  <p className="flex items-center gap-2">
-                    <MapPin className="h-3.5 w-3.5 shrink-0" />
-                    <span>{ev.venue}</span>
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/60 px-6 py-3.5">
-                <span className="font-mono text-xs text-slate-600 tabular-nums">
-                  {ev.registeredCount}/{ev.capacity} registered
-                  {ev.isPaid ? ` · INR ${ev.feeAmount}` : ' · Free'}
-                </span>
-                <Link
-                  to={`/app/student/events/${ev.id}`}
-                  className="rounded-lg bg-violet-700 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-violet-800 whitespace-nowrap"
-                >
-                  View &amp; Register
-                </Link>
-              </div>
-            </Card>
-          ))}
+                    <Link
+                      to={`/app/student/events/${ev.id}`}
+                      className="rounded-lg bg-violet-700 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-violet-800 whitespace-nowrap"
+                    >
+                      View &amp; Register
+                    </Link>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+          <Card className="overflow-hidden">
+            <PaginationBar pagination={eventsPage?.pagination} onPageChange={setPage} />
+          </Card>
         </div>
       )}
     </div>

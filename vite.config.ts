@@ -17,7 +17,8 @@ export default defineConfig(() => {
           id: '/',
           name: 'CampusVerse',
           short_name: 'CampusVerse',
-          description: 'College clubs, events, registrations, QR attendance, and institutional reporting platform.',
+          description:
+            'College clubs, events, registrations, QR attendance, and institutional reporting platform.',
           theme_color: '#ffffff',
           background_color: '#f8fafc',
           display: 'standalone',
@@ -45,8 +46,8 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,jpg}'],
+          maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           navigateFallback: '/index.html',
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
@@ -54,6 +55,22 @@ export default defineConfig(() => {
               // Never cache private API responses or sensitive account data
               urlPattern: ({url}) => url.pathname.startsWith('/api/'),
               handler: 'NetworkOnly',
+            },
+            {
+              // Cache static image assets on demand rather than precaching all heavy JPGs
+              urlPattern: ({request, url}) =>
+                request.destination === 'image' && /\.(?:jpg|jpeg|webp)$/i.test(url.pathname),
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'campusverse-static-images',
+                expiration: {
+                  maxEntries: 30,
+                  maxAgeSeconds: 60 * 60 * 24 * 30,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
             },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
@@ -86,13 +103,12 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
+          enabled: false,
           type: 'module',
         },
       }),
       // Copies src/assets into dist/ so root-relative URLs like
-      // "/src/assets/images/..." (e.g. generate_image output) still resolve
-      // in production builds. Do not remove.
+      // "/src/assets/images/..." still resolve in production builds.
       {
         name: 'copy-unbundled-src-assets',
         apply: 'build',
@@ -100,8 +116,8 @@ export default defineConfig(() => {
           if (error) {
             return;
           }
-          const distDir = path.resolve(__dirname, 'dist');
-          const srcAssets = path.resolve(__dirname, 'src/assets');
+          const distDir = path.resolve(import.meta.dirname, 'dist');
+          const srcAssets = path.resolve(import.meta.dirname, 'src/assets');
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
@@ -109,9 +125,44 @@ export default defineConfig(() => {
         },
       },
     ],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return undefined;
+            if (
+              id.includes('/node_modules/react/') ||
+              id.includes('/node_modules/react-dom/') ||
+              id.includes('/node_modules/react-router-dom/') ||
+              id.includes('/node_modules/react-router/')
+            ) {
+              return 'react-vendor';
+            }
+            if (
+              id.includes('/node_modules/@tanstack/react-query') ||
+              id.includes('/node_modules/zod/') ||
+              id.includes('/node_modules/react-hook-form/') ||
+              id.includes('/node_modules/@hookform/resolvers/')
+            ) {
+              return 'query-vendor';
+            }
+            if (id.includes('/node_modules/@supabase/')) {
+              return 'supabase-vendor';
+            }
+            if (
+              id.includes('/node_modules/lucide-react/') ||
+              id.includes('/node_modules/qrcode.react/')
+            ) {
+              return 'ui-vendor';
+            }
+            return undefined;
+          },
+        },
+      },
+    },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
     server: {

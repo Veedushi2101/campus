@@ -1,16 +1,24 @@
 import crypto from 'crypto';
+import {
+  isClubOfficerRole,
+  type CoreMemberPermission,
+} from '../../../shared/constants/permissions.ts';
 import type {
   AuditLogEntry,
   Club,
+  ClubInvitation,
   ClubMembership,
+  ClubRole,
   ClubStatus,
-  CoreMemberPermission,
+  EventFormVersion,
   EventItem,
   EventReport,
   EventStatus,
   FinancialLineItem,
   FinancialReport,
   FormField,
+  FormFieldType,
+  InvitationStatus,
   NotificationItem,
   Registration,
   RegistrationForm,
@@ -19,8 +27,10 @@ import type {
 } from '../../../shared/types/domain.ts';
 import type {
   auditLogs,
+  clubInvitations,
   clubMemberships,
   clubs,
+  eventFormVersions,
   eventForms,
   eventReports,
   events,
@@ -42,6 +52,12 @@ export function getPgErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const errObj = error as {code?: string; cause?: {code?: string}};
   return errObj.code || errObj.cause?.code;
+}
+
+export function getPgErrorMessage(error: unknown): string {
+  if (!error || typeof error !== 'object') return String(error || '');
+  const errObj = error as {message?: string; cause?: {message?: string}};
+  return errObj.cause?.message || errObj.message || '';
 }
 
 export function isPgUniqueViolation(error: unknown): boolean {
@@ -140,6 +156,8 @@ export function mapMembershipRow(
   row: typeof clubMemberships.$inferSelect,
   extras?: {userName?: string; userEmail?: string; clubName?: string},
 ): ClubMembership {
+  const perms = (row.permissions || []) as CoreMemberPermission[];
+  const role = row.membershipRole as ClubRole;
   return {
     id: row.id,
     userId: row.userId,
@@ -147,36 +165,74 @@ export function mapMembershipRow(
     userEmail: extras?.userEmail,
     clubId: row.clubId,
     clubName: extras?.clubName,
-    role: row.membershipRole as ClubMembership['role'],
+    role,
     title: row.title,
-    permissions: (row.permissions || []) as CoreMemberPermission[],
+    permissions: perms,
+    canScanQr: isClubOfficerRole(role) || perms.includes('SCAN_ATTENDANCE'),
     assignedTasks: row.assignedTasks || [],
     joinedAt: row.createdAt.toISOString(),
   };
 }
 
+export function mapInvitationRow(
+  row: typeof clubInvitations.$inferSelect,
+  extras?: {clubName?: string; inviterName?: string},
+): ClubInvitation {
+  const effectiveStatus: InvitationStatus =
+    row.status === 'pending' && row.expiresAt.getTime() <= Date.now()
+      ? 'expired'
+      : (row.status as InvitationStatus);
+
+  return {
+    id: row.id,
+    clubId: row.clubId,
+    clubName: extras?.clubName,
+    inviterUserId: row.inviterUserId,
+    inviterName: extras?.inviterName,
+    inviteeEmail: row.inviteeEmail,
+    intendedRole: row.intendedRole as ClubRole,
+    title: row.title,
+    permissions: (row.permissions || []) as CoreMemberPermission[],
+    status: effectiveStatus,
+    expiresAt: row.expiresAt.toISOString(),
+    acceptedAt: row.acceptedAt ? row.acceptedAt.toISOString() : null,
+    revokedAt: row.revokedAt ? row.revokedAt.toISOString() : null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    deliveryMode:
+      row.deliveryMode === 'supabase_admin' || row.deliveryMode === 'smtp'
+        ? row.deliveryMode
+        : 'test_adapter',
+  };
+}
+
 export function mapEventRow(
   row: typeof events.$inferSelect,
-  extras?: {clubName?: string; attendedCount?: number},
+  extras?: {clubName?: string; attendedCount?: number; waitlistedCount?: number},
 ): EventItem {
   return {
     id: row.id,
     clubId: row.clubId,
     clubName: extras?.clubName || '',
     title: row.title,
+    slug: row.slug,
     category: row.category as EventItem['category'],
     description: row.description,
     venue: row.venue,
     startTime: row.startsAt.toISOString(),
     endTime: row.endsAt.toISOString(),
+    registrationOpensAt: row.registrationOpensAt ? row.registrationOpensAt.toISOString() : null,
+    registrationDeadline: row.registrationDeadline.toISOString(),
     capacity: row.capacity,
     registeredCount: row.registeredCount,
+    waitlistedCount: extras?.waitlistedCount ?? 0,
     attendedCount: extras?.attendedCount ?? 0,
     status: row.status as EventStatus,
     bannerUrl: row.bannerUrl,
-    registrationDeadline: row.registrationDeadline.toISOString(),
     isPaid: row.isPaid,
     feeAmount: Number(row.feeAmount),
+    feeMinorUnits: row.feeMinorUnits ?? toCents(row.feeAmount),
+    eligibilityRules: row.eligibilityRules || {},
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -191,18 +247,41 @@ export function mapFormRow(
     .map((f) => ({
       id: f.fieldKey,
       label: f.label,
-      type: (f.fieldType === 'phone' ? 'text' : f.fieldType) as FormField['type'],
+      description: f.description || undefined,
+      type: f.fieldType as FormFieldType,
       required: f.required,
       placeholder: f.placeholder ?? undefined,
       options: f.options && f.options.length > 0 ? f.options : undefined,
+      validationRules:
+        f.validationRules && Object.keys(f.validationRules).length > 0
+          ? f.validationRules
+          : undefined,
     }));
 
   return {
     id: formRow.id,
     eventId: formRow.eventId,
     version: formRow.version,
+    status: formRow.status === 'published' ? 'published' : 'draft',
+    publishedVersion: formRow.publishedVersion ?? 0,
+    title: formRow.title,
+    description: formRow.description || '',
     fields,
     updatedAt: formRow.updatedAt.toISOString(),
+  };
+}
+
+export function mapFormVersionRow(row: typeof eventFormVersions.$inferSelect): EventFormVersion {
+  return {
+    id: row.id,
+    formId: row.formId,
+    eventId: row.eventId,
+    version: row.version,
+    title: row.title,
+    description: row.description,
+    fields: Array.isArray(row.schemaSnapshot) ? row.schemaSnapshot : [],
+    publishedBy: row.publishedBy,
+    publishedAt: row.publishedAt.toISOString(),
   };
 }
 
@@ -217,8 +296,10 @@ export function mapRegistrationRow(
     studentName?: string;
     studentEmail?: string;
     qrUsedAt?: string | null;
+    waitlistPosition?: number | null;
   },
 ): Registration {
+  const status = row.status as RegistrationStatus;
   return {
     id: row.id,
     eventId: row.eventId,
@@ -230,8 +311,12 @@ export function mapRegistrationRow(
     studentId: row.userId,
     studentName: extras?.studentName || 'Student',
     studentEmail: extras?.studentEmail || '',
+    formVersion: row.formVersion,
+    formVersionId: row.formVersionId ?? null,
     answers: row.answers || {},
-    status: row.status as RegistrationStatus,
+    status,
+    attendanceStatus: status === 'attended' || Boolean(extras?.qrUsedAt) ? 'present' : 'not_checked_in',
+    waitlistPosition: extras?.waitlistPosition ?? null,
     qrToken: row.qrToken,
     qrUsedAt: extras?.qrUsedAt ?? null,
     createdAt: row.submittedAt.toISOString(),

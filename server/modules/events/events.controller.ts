@@ -12,6 +12,24 @@ export class EventsController {
       const clubId = typeof req.query.clubId === 'string' ? req.query.clubId : undefined;
       const status = typeof req.query.status === 'string' ? req.query.status : undefined;
       const upcomingOnly = req.query.upcomingOnly === 'true';
+      const hasPagination =
+        req.query.page !== undefined || req.query.pageSize !== undefined;
+      const page = req.query.page ? Number(req.query.page) : undefined;
+      const pageSize = req.query.pageSize ? Number(req.query.pageSize) : undefined;
+
+      if (hasPagination) {
+        const result = await this.service.listEventsPaginated({
+          search,
+          category,
+          clubId,
+          status,
+          upcomingOnly,
+          page,
+          pageSize,
+        });
+        sendSuccess(res, result.items, 200, {pagination: result.pagination});
+        return;
+      }
 
       const events = await this.service.listEvents({
         search,
@@ -68,6 +86,74 @@ export class EventsController {
         name: req.auth!.user.name,
       });
       sendSuccess(res, published);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  unpublish = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const updated = await this.service.transitionLifecycle(req.params.eventId, 'draft', {
+        id: req.auth!.user.id,
+        name: req.auth!.user.name,
+      });
+      sendSuccess(res, updated);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  openRegistration = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const updated = await this.service.transitionLifecycle(
+        req.params.eventId,
+        'registration_open',
+        {
+          id: req.auth!.user.id,
+          name: req.auth!.user.name,
+        },
+      );
+      sendSuccess(res, updated);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  closeRegistration = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const updated = await this.service.transitionLifecycle(
+        req.params.eventId,
+        'registration_closed',
+        {
+          id: req.auth!.user.id,
+          name: req.auth!.user.name,
+        },
+      );
+      sendSuccess(res, updated);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  cancel = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const updated = await this.service.transitionLifecycle(req.params.eventId, 'cancelled', {
+        id: req.auth!.user.id,
+        name: req.auth!.user.name,
+      });
+      sendSuccess(res, updated);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  complete = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const updated = await this.service.transitionLifecycle(req.params.eventId, 'completed', {
+        id: req.auth!.user.id,
+        name: req.auth!.user.name,
+      });
+      sendSuccess(res, updated);
     } catch (error) {
       next(error);
     }

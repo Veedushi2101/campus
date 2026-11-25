@@ -51,9 +51,28 @@ export function verifySessionToken(token: string): SignedSessionPayload | null {
 }
 
 /**
- * Generates an opaque, non-PII QR verification token.
+ * Generates an opaque, high-entropy non-PII QR verification token.
  * Contains zero student name, email, or personal identifiers.
  */
 export function generateOpaqueQrToken(): string {
-  return `CV-QR-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
+  return `CV-QR-${crypto.randomBytes(12).toString('base64url').toUpperCase()}`;
+}
+
+export function generateInvitationToken(): string {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
+export function hashInvitationToken(token: string): string {
+  return crypto.createHash('sha256').update(token.trim()).digest('hex');
+}
+
+/**
+ * Neutralizes spreadsheet CSV formula injection (Excel/Sheets/Calc)
+ * by prefixing values starting with =, +, -, @, tab, or CR with a single quote.
+ */
+export function escapeCsvCell(value: unknown): string {
+  const raw = value === null || value === undefined ? '' : String(value);
+  const formulaSafe = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+  const escaped = formulaSafe.replace(/"/g, '""');
+  return `"${escaped}"`;
 }

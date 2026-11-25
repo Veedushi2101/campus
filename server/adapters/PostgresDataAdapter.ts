@@ -5,15 +5,21 @@ import type {
   Club,
   ClubDetail,
   ClubFollow,
+  ClubInvitation,
   ClubMembership,
+  ClubRole,
   ClubStatus,
   CoreMemberPermission,
+  EventFormVersion,
   EventItem,
   EventReport,
+  EventStatus,
   FinancialReport,
+  FormAnswerValue,
   FormField,
   HallOfFameEntry,
   NotificationItem,
+  PaginatedResult,
   Registration,
   RegistrationForm,
   SystemSettings,
@@ -22,14 +28,16 @@ import type {
 import {checkDatabaseHealth} from '../db/index.ts';
 import {ClubsRepository} from '../db/repositories/clubs.repository.ts';
 import {EventsRepository} from '../db/repositories/events.repository.ts';
+import {InvitationsRepository} from '../db/repositories/invitations.repository.ts';
 import {OperationsRepository} from '../db/repositories/operations.repository.ts';
 import {UsersRepository} from '../db/repositories/users.repository.ts';
 import {BusinessRuleError} from '../shared/errors/AppError.ts';
-import type {DataAdapter} from './DataAdapter.ts';
+import type {DataAdapter, ResolvedAuthContext} from './DataAdapter.ts';
 
 export class PostgresDataAdapter implements DataAdapter {
   private readonly usersRepo = new UsersRepository();
   private readonly clubsRepo = new ClubsRepository();
+  private readonly invitationsRepo = new InvitationsRepository();
   private readonly eventsRepo = new EventsRepository();
   private readonly opsRepo = new OperationsRepository();
 
@@ -73,6 +81,18 @@ export class PostgresDataAdapter implements DataAdapter {
     return this.usersRepo.provisionAuthenticatedUser(input);
   }
 
+  resolveAuthenticatedContext(input: {
+    authUserId: string;
+    email: string;
+    name?: string;
+    department?: string;
+    yearOfStudy?: string;
+    emailVerified: boolean;
+    isBootstrapSuperAdmin: boolean;
+  }): Promise<ResolvedAuthContext> {
+    return this.usersRepo.resolveAuthenticatedContext(input);
+  }
+
   recordAuthSession(input: {
     userId: string;
     ipHash?: string;
@@ -109,8 +129,23 @@ export class PostgresDataAdapter implements DataAdapter {
     category?: string;
     status?: ClubStatus;
     includeAllStatuses?: boolean;
+    sortBy?: 'followers' | 'name' | 'events';
+    page?: number;
+    pageSize?: number;
   }): Promise<Club[]> {
     return this.clubsRepo.listClubs(filters);
+  }
+
+  listClubsPaginated(filters?: {
+    search?: string;
+    category?: string;
+    status?: ClubStatus;
+    includeAllStatuses?: boolean;
+    sortBy?: 'followers' | 'name' | 'events';
+    page?: number;
+    pageSize?: number;
+  }): Promise<PaginatedResult<Club>> {
+    return this.clubsRepo.listClubsPaginated(filters);
   }
 
   getClubDetail(clubId: string, viewerUserId?: string): Promise<ClubDetail | null> {
@@ -119,11 +154,13 @@ export class PostgresDataAdapter implements DataAdapter {
 
   createClub(input: {
     name: string;
+    slug?: string;
     category: Club['category'];
     tagline: string;
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    foundedYear?: number;
     status?: ClubStatus;
     createdByUserId?: string;
   }): Promise<Club> {
@@ -138,7 +175,7 @@ export class PostgresDataAdapter implements DataAdapter {
     return this.clubsRepo.updateClubStatus(clubId, status);
   }
 
-  // Memberships & Following
+  // Memberships, Leadership, Invitations & Following
   getMembershipsForUser(userId: string): Promise<ClubMembership[]> {
     return this.clubsRepo.getMembershipsForUser(userId);
   }
@@ -179,6 +216,67 @@ export class PostgresDataAdapter implements DataAdapter {
     return this.clubsRepo.removeClubMembership(clubId, membershipId);
   }
 
+  assignClubLeadership(input: {
+    clubId: string;
+    email: string;
+    role: 'president' | 'vice_president';
+    title?: string;
+    replaceExisting?: boolean;
+    sendInvitation?: boolean;
+    actorUserId: string;
+  }) {
+    return this.invitationsRepo.assignClubLeadership(input);
+  }
+
+  createClubInvitation(input: {
+    clubId: string;
+    email: string;
+    role: ClubRole;
+    title?: string;
+    permissions: CoreMemberPermission[];
+    inviterUserId: string;
+    replaceExisting?: boolean;
+  }): Promise<ClubInvitation> {
+    return this.invitationsRepo.createClubInvitation(input);
+  }
+
+  listClubInvitations(clubId: string): Promise<ClubInvitation[]> {
+    return this.invitationsRepo.listClubInvitations(clubId);
+  }
+
+  resendClubInvitation(
+    clubId: string,
+    invitationId: string,
+    actorUserId: string,
+  ): Promise<ClubInvitation> {
+    return this.invitationsRepo.resendClubInvitation(clubId, invitationId, actorUserId);
+  }
+
+  revokeClubInvitation(
+    clubId: string,
+    invitationId: string,
+    actorUserId: string,
+  ): Promise<ClubInvitation | null> {
+    return this.invitationsRepo.revokeClubInvitation(clubId, invitationId, actorUserId);
+  }
+
+  previewInvitation(token: string) {
+    return this.invitationsRepo.previewInvitation(token);
+  }
+
+  acceptInvitation(input: {
+    token: string;
+    authUserId: string;
+    email: string;
+    name?: string;
+    department?: string;
+    yearOfStudy?: string;
+    emailVerified: boolean;
+    isBootstrapSuperAdmin: boolean;
+  }) {
+    return this.invitationsRepo.acceptInvitation(input);
+  }
+
   getFollowsForUser(userId: string): Promise<ClubFollow[]> {
     return this.clubsRepo.getFollowsForUser(userId);
   }
@@ -203,8 +301,22 @@ export class PostgresDataAdapter implements DataAdapter {
     clubId?: string;
     status?: string;
     upcomingOnly?: boolean;
+    page?: number;
+    pageSize?: number;
   }): Promise<EventItem[]> {
     return this.eventsRepo.listEvents(filters);
+  }
+
+  listEventsPaginated(filters?: {
+    search?: string;
+    category?: string;
+    clubId?: string;
+    status?: string;
+    upcomingOnly?: boolean;
+    page?: number;
+    pageSize?: number;
+  }): Promise<PaginatedResult<EventItem>> {
+    return this.eventsRepo.listEventsPaginated(filters);
   }
 
   getEventById(eventId: string): Promise<EventItem | null> {
@@ -237,13 +349,29 @@ export class PostgresDataAdapter implements DataAdapter {
     return this.eventsRepo.publishEvent(eventId);
   }
 
+  updateEventLifecycle(eventId: string, targetStatus: EventStatus): Promise<EventItem | null> {
+    return this.eventsRepo.updateEventLifecycle(eventId, targetStatus);
+  }
+
   // Forms
   getRegistrationForm(eventId: string): Promise<RegistrationForm> {
     return this.eventsRepo.getRegistrationForm(eventId);
   }
 
-  upsertRegistrationForm(eventId: string, fields: FormField[]): Promise<RegistrationForm> {
-    return this.eventsRepo.upsertRegistrationForm(eventId, fields);
+  upsertRegistrationForm(
+    eventId: string,
+    fields: FormField[],
+    meta?: {title?: string; description?: string; updatedBy?: string},
+  ): Promise<RegistrationForm> {
+    return this.eventsRepo.upsertRegistrationForm(eventId, fields, meta);
+  }
+
+  publishRegistrationForm(eventId: string, publishedBy?: string): Promise<EventFormVersion> {
+    return this.eventsRepo.publishRegistrationForm(eventId, publishedBy);
+  }
+
+  getPublishedFormVersion(eventId: string, version?: number): Promise<EventFormVersion | null> {
+    return this.eventsRepo.getPublishedFormVersion(eventId, version);
   }
 
   // Registrations
@@ -252,14 +380,27 @@ export class PostgresDataAdapter implements DataAdapter {
     studentId: string;
     studentName: string;
     studentEmail: string;
-    answers: Record<string, string | boolean | number>;
+    answers: Record<string, FormAnswerValue>;
     qrToken: string;
+    formVersion?: number;
+    formVersionId?: string | null;
   }): Promise<Registration> {
     return this.opsRepo.createRegistration(input);
   }
 
+  cancelRegistration(eventId: string, studentId: string, registrationId?: string) {
+    return this.opsRepo.cancelRegistration(eventId, studentId, registrationId);
+  }
+
   listRegistrationsForEvent(eventId: string): Promise<Registration[]> {
     return this.opsRepo.listRegistrationsForEvent(eventId);
+  }
+
+  listRegistrationsForEventPaginated(
+    eventId: string,
+    opts?: {page?: number; pageSize?: number; search?: string; status?: string},
+  ): Promise<PaginatedResult<Registration>> {
+    return this.opsRepo.listRegistrationsForEventPaginated(eventId, opts);
   }
 
   listRegistrationsForStudent(studentId: string): Promise<Registration[]> {
@@ -283,13 +424,22 @@ export class PostgresDataAdapter implements DataAdapter {
     studentCode: string;
     qrToken: string;
     method: 'qr_scan' | 'manual_override';
+    manualReason?: string;
     checkedInBy: string;
+    scannedByUserId?: string;
   }): Promise<AttendanceRecord> {
     return this.opsRepo.recordAttendance(input);
   }
 
   listAttendanceForEvent(eventId: string): Promise<AttendanceRecord[]> {
     return this.opsRepo.listAttendanceForEvent(eventId);
+  }
+
+  listAttendanceForEventPaginated(
+    eventId: string,
+    opts?: {page?: number; pageSize?: number; search?: string},
+  ): Promise<PaginatedResult<AttendanceRecord>> {
+    return this.opsRepo.listAttendanceForEventPaginated(eventId, opts);
   }
 
   // Reports & Finance

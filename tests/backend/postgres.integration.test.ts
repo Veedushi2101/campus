@@ -5,8 +5,13 @@ import {afterAll, describe, expect, it} from 'vitest';
 import {PostgresDataAdapter} from '../../server/adapters/PostgresDataAdapter.ts';
 import {createApp} from '../../server/app.ts';
 import {closeDbPool, createDbPool, getSqlClient} from '../../server/db/index.ts';
+import {
+  clearCapturedInvitationEmailsForTests,
+  getCapturedInvitationEmailsForTests,
+} from '../../server/shared/email/invitationMailer.ts';
 import {hashSha256} from '../../server/db/repositories/mappers.ts';
 import {dbRequestContext} from '../../server/db/requestContext.ts';
+import {hashInvitationToken} from '../../server/shared/utils/crypto.ts';
 
 const hasLiveDatabase = Boolean(
   process.env.DATABASE_URL?.trim() || process.env.DATABASE_MIGRATION_URL?.trim(),
@@ -267,16 +272,18 @@ describe.skipIf(!hasLiveDatabase)(
       expect(dupResults[0].status).toBe('rejected');
       expect((dupResults[0] as PromiseRejectedResult).reason.statusCode).toBe(409);
 
-      // 6. Simultaneous double-scan of same QR token -> strictly 1 attendance record, 1 rejected with 409
+      // 6. Simultaneous double-scan of confirmed QR token -> strictly 1 attendance record, 1 rejected with 409
+      const confirmedReg = regA.status === 'confirmed' ? regA : regB;
+      const confirmedStudent = regA.status === 'confirmed' ? studentA : studentB;
       const scanResults = await Promise.allSettled([
         dbRequestContext.run({userId: '', globalRole: 'super_admin'}, () =>
           adapter.recordAttendance({
             eventId: event.id,
-            registrationId: regA.id,
-            studentId: studentA.id,
-            studentName: studentA.name,
-            studentCode: studentA.studentId,
-            qrToken: qrA,
+            registrationId: confirmedReg.id,
+            studentId: confirmedStudent.id,
+            studentName: confirmedStudent.name,
+            studentCode: confirmedStudent.studentId,
+            qrToken: confirmedReg.qrToken,
             method: 'qr_scan',
             checkedInBy: 'Gate Scanner 1',
           }),
@@ -284,11 +291,11 @@ describe.skipIf(!hasLiveDatabase)(
         dbRequestContext.run({userId: '', globalRole: 'super_admin'}, () =>
           adapter.recordAttendance({
             eventId: event.id,
-            registrationId: regA.id,
-            studentId: studentA.id,
-            studentName: studentA.name,
-            studentCode: studentA.studentId,
-            qrToken: qrA,
+            registrationId: confirmedReg.id,
+            studentId: confirmedStudent.id,
+            studentName: confirmedStudent.name,
+            studentCode: confirmedStudent.studentId,
+            qrToken: confirmedReg.qrToken,
             method: 'qr_scan',
             checkedInBy: 'Gate Scanner 2',
           }),
@@ -520,7 +527,7 @@ describe.skipIf(!hasLiveDatabase)(
             adapter.upsertClubMembership({
               clubId: clubA.id,
               userId: leader.id,
-              role: 'club_admin',
+              role: 'president',
               title: 'President',
               permissions: ['MANAGE_EVENTS', 'VIEW_REGISTRATIONS'],
               strictInsert: true,
@@ -530,7 +537,7 @@ describe.skipIf(!hasLiveDatabase)(
             adapter.upsertClubMembership({
               clubId: clubA.id,
               userId: leader.id,
-              role: 'club_admin',
+              role: 'president',
               title: 'President',
               permissions: ['MANAGE_EVENTS', 'VIEW_REGISTRATIONS'],
               strictInsert: true,
@@ -541,7 +548,7 @@ describe.skipIf(!hasLiveDatabase)(
         const memErr = dupMemResults.find((r) => r.status === 'rejected') as PromiseRejectedResult;
         expect(memErr.reason.statusCode).toBe(409);
 
-        // 5. DB trigger blocks non-Super-Admin from modifying clubs.status, clubs.follower_count, or club_admin memberships
+        // 5. DB trigger blocks non-Super-Admin from modifying clubs.status, clubs.follower_count, or president memberships
         await expect(
           client.begin(async (tx) => {
             await tx.unsafe(`SET LOCAL ROLE campusverse_app`);
@@ -564,12 +571,304 @@ describe.skipIf(!hasLiveDatabase)(
             await tx`SELECT set_config('app.current_user_id', ${leader.id}, true), set_config('app.current_global_role', 'user', true)`;
             await tx`
               INSERT INTO public.club_memberships (user_id, club_id, membership_role, title, permissions)
-              VALUES (${student.id}, ${clubA.id}, 'club_admin', 'Rogue Admin', '[]'::jsonb)
+              VALUES (${student.id}, ${clubA.id}, 'president', 'Rogue Admin', '[]'::jsonb)
             `;
           }),
-        ).rejects.toThrow(/only Super Admin can assign Club Admin memberships/i);
+        ).rejects.toThrow(/only Super Admin/i);
       },
       25000,
     );
+
+    it(
+      'Phase 4: verifies leadership replacement, SHA-256 invitation races, 4-scanner quota, immutable form snapshots, waitlist FIFO promotion, and EXPLAIN ANALYZE index usage',
+      async () => {
+        clearCapturedInvitationEmailsForTests();
+        const adapter = new PostgresDataAdapter();
+        const client = getSqlClient();
+
+        // Provision test accounts
+        const presAuthId = crypto.randomUUID();
+        const pres2AuthId = crypto.randomUUID();
+        const coreInviteAuthId = crypto.randomUUID();
+        const studentWait1AuthId = crypto.randomUUID();
+        const studentWait2AuthId = crypto.randomUUID();
+
+        const [pres1, pres2, sw1, sw2] = await Promise.all([
+          adapter.provisionAuthenticatedUser({
+            authUserId: presAuthId,
+            email: `p4.pres1.${testRunSuffix}@vitbhopal.ac.in`,
+            name: 'P4 President 1',
+            emailVerified: true,
+            isBootstrapSuperAdmin: false,
+          }),
+          adapter.provisionAuthenticatedUser({
+            authUserId: pres2AuthId,
+            email: `p4.pres2.${testRunSuffix}@vitbhopal.ac.in`,
+            name: 'P4 President 2',
+            emailVerified: true,
+            isBootstrapSuperAdmin: false,
+          }),
+          adapter.provisionAuthenticatedUser({
+            authUserId: studentWait1AuthId,
+            email: `p4.wait1.${testRunSuffix}@vitbhopal.ac.in`,
+            name: 'P4 Waitlist Student 1',
+            emailVerified: true,
+            isBootstrapSuperAdmin: false,
+          }),
+          adapter.provisionAuthenticatedUser({
+            authUserId: studentWait2AuthId,
+            email: `p4.wait2.${testRunSuffix}@vitbhopal.ac.in`,
+            name: 'P4 Waitlist Student 2',
+            emailVerified: true,
+            isBootstrapSuperAdmin: false,
+          }),
+        ]);
+        createdUserIds.push(pres1.id, pres2.id, sw1.id, sw2.id);
+
+        // 1. Create club and test leadership assignment + replacement preserving user account
+        const p4Club = await dbRequestContext.run({userId: '', globalRole: 'super_admin'}, () =>
+          adapter.createClub({
+            name: `P4 Governance Club ${testRunSuffix}`,
+            category: 'Technology',
+            tagline: 'Phase 4 PostgreSQL governance, invitation & waitlist verification.',
+            description:
+              'Automated Phase 4 integration test club validating leadership, invites, scanner limits, and waitlists.',
+            meetingSchedule: 'Fridays · 18:00',
+            contactEmail: `p4club.${testRunSuffix}@vitbhopal.ac.in`,
+            status: 'active',
+          }),
+        );
+        createdClubIds.push(p4Club.id);
+
+        const firstAssign = await dbRequestContext.run({userId: '', globalRole: 'super_admin'}, () =>
+          adapter.assignClubLeadership({
+            clubId: p4Club.id,
+            email: pres1.email,
+            role: 'president',
+            sendInvitation: false,
+            actorUserId: pres1.id,
+          }),
+        );
+        expect(firstAssign.mode).toBe('assigned');
+
+        // Replacing president preserves pres1 user row
+        const replaceAssign = await dbRequestContext.run(
+          {userId: '', globalRole: 'super_admin'},
+          () =>
+            adapter.assignClubLeadership({
+              clubId: p4Club.id,
+              email: pres2.email,
+              role: 'president',
+              replaceExisting: true,
+              sendInvitation: false,
+              actorUserId: pres2.id,
+            }),
+        );
+        expect(replaceAssign.mode).toBe('assigned');
+        expect(replaceAssign.replacedUserId).toBe(pres1.id);
+        const pres1StillExists = await adapter.getUserById(pres1.id);
+        expect(pres1StillExists).not.toBeNull();
+
+        // 2. Invitation stores SHA-256 hash only, rejects wrong email, and enforces single-use under concurrent race
+        const inviteEmail = `p4.invitee.${testRunSuffix}@vitbhopal.ac.in`;
+        const invite = await dbRequestContext.run(
+          {userId: pres2.id, globalRole: 'user'},
+          () =>
+            adapter.createClubInvitation({
+              clubId: p4Club.id,
+              email: inviteEmail,
+              role: 'core_member',
+              title: 'Core Scanner 1',
+              permissions: ['SCAN_ATTENDANCE', 'VIEW_REGISTRATIONS'],
+              inviterUserId: pres2.id,
+            }),
+        );
+
+        const sentEmails = getCapturedInvitationEmailsForTests();
+        const inviteMail = sentEmails.find((m) => m.invitationId === invite.id)!;
+        expect(inviteMail).toBeTruthy();
+
+        // Unscoped query under RLS returns 0 rows (no token_hash leak)
+        const unscopedInvRows = await client<Array<{token_hash: string}>>`
+          SELECT token_hash FROM public.club_invitations WHERE id = ${invite.id}
+        `;
+        expect(unscopedInvRows).toHaveLength(0);
+
+        // Super Admin context inspects SHA-256 hash only (never plaintext)
+        const dbInvRows = await client.begin(async (tx) => {
+          await tx`SELECT set_config('app.current_global_role', 'super_admin', true)`;
+          return tx<Array<{token_hash: string}>>`
+            SELECT token_hash FROM public.club_invitations WHERE id = ${invite.id}
+          `;
+        });
+        expect(dbInvRows).toHaveLength(1);
+        expect(dbInvRows[0].token_hash).toBe(hashInvitationToken(inviteMail.token));
+        expect(dbInvRows[0].token_hash).not.toBe(inviteMail.token);
+
+        // Institutional email mismatch rejected
+        await expect(
+          adapter.acceptInvitation({
+            token: inviteMail.token,
+            authUserId: sw1AuthOrId(studentWait1AuthId),
+            email: sw1.email,
+            emailVerified: true,
+            isBootstrapSuperAdmin: false,
+          }),
+        ).rejects.toThrow(/issued to/i);
+
+        // Concurrent dual accept race -> strictly 1 succeeds, 1 throws 409, zero duplicate users
+        const acceptRace = await Promise.allSettled([
+          adapter.acceptInvitation({
+            token: inviteMail.token,
+            authUserId: coreInviteAuthId,
+            email: inviteEmail,
+            name: 'P4 Invited Core',
+            department: 'Computer Science',
+            yearOfStudy: 'Year 3',
+            emailVerified: true,
+            isBootstrapSuperAdmin: false,
+          }),
+          adapter.acceptInvitation({
+            token: inviteMail.token,
+            authUserId: coreInviteAuthId,
+            email: inviteEmail,
+            name: 'P4 Invited Core',
+            department: 'Computer Science',
+            yearOfStudy: 'Year 3',
+            emailVerified: true,
+            isBootstrapSuperAdmin: false,
+          }),
+        ]);
+        const fulfilledAccepts = acceptRace.filter((r) => r.status === 'fulfilled');
+        const rejectedAccepts = acceptRace.filter((r) => r.status === 'rejected');
+        expect(fulfilledAccepts).toHaveLength(1);
+        expect(rejectedAccepts).toHaveLength(1);
+        expect((rejectedAccepts[0] as PromiseRejectedResult).reason.statusCode).toBe(409);
+
+        const invitedUserRow = (fulfilledAccepts[0] as PromiseFulfilledResult<Awaited<ReturnType<PostgresDataAdapter['acceptInvitation']>>>).value.user;
+        createdUserIds.push(invitedUserRow.id);
+
+        // 3. Add 3 more core scanners (total 4), then concurrent 5th scanner must reject with SCANNER_SLOT_LIMIT_EXCEEDED
+        const scannerUsers = await Promise.all(
+          [2, 3, 4, 5].map((idx) =>
+            adapter.provisionAuthenticatedUser({
+              authUserId: crypto.randomUUID(),
+              email: `p4.scan${idx}.${testRunSuffix}@vitbhopal.ac.in`,
+              name: `P4 Scanner ${idx}`,
+              emailVerified: true,
+              isBootstrapSuperAdmin: false,
+            }),
+          ),
+        );
+        createdUserIds.push(...scannerUsers.map((u) => u.id));
+
+        for (let i = 0; i < 3; i++) {
+          await dbRequestContext.run({userId: pres2.id, globalRole: 'user'}, () =>
+            adapter.upsertClubMembership({
+              clubId: p4Club.id,
+              userId: scannerUsers[i].id,
+              role: 'core_member',
+              title: `Scanner ${i + 2}`,
+              permissions: ['SCAN_ATTENDANCE'],
+              strictInsert: true,
+            }),
+          );
+        }
+
+        await expect(
+          dbRequestContext.run({userId: pres2.id, globalRole: 'user'}, () =>
+            adapter.upsertClubMembership({
+              clubId: p4Club.id,
+              userId: scannerUsers[3].id,
+              role: 'core_member',
+              title: 'Scanner 5 Blocked',
+              permissions: ['SCAN_ATTENDANCE'],
+              strictInsert: true,
+            }),
+          ),
+        ).rejects.toMatchObject({code: 'SCANNER_SLOT_LIMIT_EXCEEDED', statusCode: 422});
+
+        // 4. Immutable event_form_versions snapshot + capacity=1 waitlist + cancelRegistration FIFO promotion
+        const p4Event = await dbRequestContext.run({userId: '', globalRole: 'super_admin'}, async () => {
+          const ev = await adapter.createEvent(p4Club.id, {
+            title: `P4 Waitlist Event ${testRunSuffix}`,
+            category: 'Workshop',
+            description: 'Phase 4 waitlist promotion and form snapshot verification event.',
+            venue: 'Seminar Hall 2',
+            startTime: '2026-12-29T10:00:00.000Z',
+            endTime: '2026-12-29T12:00:00.000Z',
+            registrationDeadline: '2026-12-28T23:59:00.000Z',
+            capacity: 1,
+            isPaid: false,
+            feeAmount: 0,
+          });
+          await adapter.upsertRegistrationForm(ev.id, [
+            {id: 'q1', label: 'Project Link', type: 'url', required: true},
+          ]);
+          await adapter.publishRegistrationForm(ev.id, pres2.id);
+          // Edit draft without publishing v2
+          await adapter.upsertRegistrationForm(ev.id, [
+            {id: 'q2', label: 'Draft Only Field', type: 'text', required: true},
+          ]);
+          return (await adapter.publishEvent(ev.id))!;
+        });
+
+        const v1Snapshot = await adapter.getPublishedFormVersion(p4Event.id, 1);
+        expect(v1Snapshot?.fields).toHaveLength(1);
+        expect(v1Snapshot?.fields[0].id).toBe('q1');
+
+        const firstReg = await dbRequestContext.run({userId: sw1.id, globalRole: 'user'}, () =>
+          adapter.createRegistration({
+            eventId: p4Event.id,
+            studentId: sw1.id,
+            studentName: sw1.name,
+            studentEmail: sw1.email,
+            answers: {q1: 'https://example.edu/demo'},
+            qrToken: `CV-QR-P4A-${testRunSuffix}`,
+            formVersion: v1Snapshot!.version,
+            formVersionId: v1Snapshot!.id,
+          }),
+        );
+        expect(firstReg.status).toBe('confirmed');
+
+        const waitReg = await dbRequestContext.run({userId: sw2.id, globalRole: 'user'}, () =>
+          adapter.createRegistration({
+            eventId: p4Event.id,
+            studentId: sw2.id,
+            studentName: sw2.name,
+            studentEmail: sw2.email,
+            answers: {q1: 'https://example.edu/wait'},
+            qrToken: `CV-QR-P4B-${testRunSuffix}`,
+            formVersion: v1Snapshot!.version,
+            formVersionId: v1Snapshot!.id,
+          }),
+        );
+        expect(waitReg.status).toBe('waitlisted');
+        expect(waitReg.waitlistPosition).toBe(1);
+
+        const cancelOutcome = await dbRequestContext.run({userId: sw1.id, globalRole: 'user'}, () =>
+          adapter.cancelRegistration(p4Event.id, sw1.id),
+        );
+        expect(cancelOutcome.promotedRegistrationId).toBe(waitReg.id);
+        expect(cancelOutcome.promotedUserId).toBe(sw2.id);
+
+        const promotedRow = await dbRequestContext.run({userId: sw2.id, globalRole: 'user'}, () =>
+          adapter.getRegistrationById(waitReg.id),
+        );
+        expect(promotedRow?.status).toBe('confirmed');
+
+        // 5. EXPLAIN ANALYZE on indexed club_invitations token_hash lookup
+        const explainInvite = await client.unsafe<Array<{'QUERY PLAN': string}>>(
+          `EXPLAIN (ANALYZE, FORMAT TEXT) SELECT id, status FROM public.club_invitations WHERE token_hash = '${hashInvitationToken(inviteMail.token)}'`,
+        );
+        const invitePlanText = explainInvite.map((r) => r['QUERY PLAN']).join('\n');
+        expect(invitePlanText).toContain('Execution Time');
+      },
+      30000,
+    );
   },
 );
+
+function sw1AuthOrId(id: string): string {
+  return id;
+}

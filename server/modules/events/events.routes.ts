@@ -31,6 +31,31 @@ export function createEventsRoutes(adapter: DataAdapter): Router {
     requireEventPermission(adapter, 'MANAGE_EVENTS', 'eventId'),
     controller.publish,
   );
+  router.post(
+    '/events/:eventId/unpublish',
+    requireEventPermission(adapter, 'MANAGE_EVENTS', 'eventId'),
+    controller.unpublish,
+  );
+  router.post(
+    '/events/:eventId/open-registration',
+    requireEventPermission(adapter, 'MANAGE_EVENTS', 'eventId'),
+    controller.openRegistration,
+  );
+  router.post(
+    '/events/:eventId/close-registration',
+    requireEventPermission(adapter, 'MANAGE_EVENTS', 'eventId'),
+    controller.closeRegistration,
+  );
+  router.post(
+    '/events/:eventId/cancel',
+    requireEventPermission(adapter, 'MANAGE_EVENTS', 'eventId'),
+    controller.cancel,
+  );
+  router.post(
+    '/events/:eventId/complete',
+    requireEventPermission(adapter, 'MANAGE_EVENTS', 'eventId'),
+    controller.complete,
+  );
 
   return router;
 }

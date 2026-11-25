@@ -25,6 +25,10 @@ import {
   X,
 } from 'lucide-react';
 import {Link, NavLink, Outlet, useLocation, useNavigate} from 'react-router-dom';
+import {
+  CLUB_ROLE_LABELS,
+  isClubOfficerRole,
+} from '../../../shared/constants/permissions.ts';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {useAuth, type WorkspaceContextType} from '../../context/AuthContext.tsx';
 import {PWAInstallButton} from '../pwa/PWAInstallButton.tsx';
@@ -39,7 +43,7 @@ interface NavItem {
 
 const CONTEXT_LABELS: Record<WorkspaceContextType, string> = {
   student: 'Student Workspace',
-  club_admin: 'Club Admin',
+  club_admin: 'Club Officer',
   core_member: 'Core Member',
   super_admin: 'Super Admin',
 };
@@ -187,7 +191,7 @@ export const AppShell: React.FC = () => {
       return;
     }
     const [role, clubId] = value.split(':');
-    if (role === 'club_admin' && clubId) {
+    if (isClubOfficerRole(role) && clubId) {
       switchContext('club_admin', clubId);
       navigate('/app/club-admin/dashboard');
     } else if (role === 'core_member' && clubId) {
@@ -200,7 +204,7 @@ export const AppShell: React.FC = () => {
   const currentSelectorValue =
     activeContext === 'student' || activeContext === 'super_admin'
       ? activeContext
-      : `${activeContext}:${activeClubId || ''}`;
+      : `${activeMembership?.role || activeContext}:${activeClubId || ''}`;
 
   const handleGlobalSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -249,7 +253,7 @@ export const AppShell: React.FC = () => {
           <option value="student">Student · Campus Discovery</option>
           {memberships.map((m) => (
             <option key={m.id} value={`${m.role}:${m.clubId}`}>
-              {m.role === 'club_admin' ? 'Club Admin' : 'Core Member'} · {m.clubName || m.clubId}
+              {CLUB_ROLE_LABELS[m.role] || m.role} · {m.clubName || m.clubId}
             </option>
           ))}
         </select>

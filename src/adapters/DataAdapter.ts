@@ -6,21 +6,36 @@ import type {
   Club,
   ClubDetail,
   ClubFollow,
+  ClubInvitation,
   ClubMembership,
+  ClubRole,
   ClubStatus,
   CoreMemberPermission,
+  EventEligibilityRules,
+  EventFormVersion,
   EventItem,
   EventReport,
   FinancialLineItem,
   FinancialReport,
+  FormAnswerValue,
   FormField,
   HallOfFameEntry,
   NotificationItem,
+  PaginatedResult,
+  PaginationMeta,
   Registration,
   RegistrationForm,
   SystemSettings,
   UserAccount,
 } from '../../shared/types/domain.ts';
+
+export type EventLifecycleAction =
+  | 'publish'
+  | 'unpublish'
+  | 'open-registration'
+  | 'close-registration'
+  | 'cancel'
+  | 'complete';
 
 export interface ClientDataAdapter {
   setAuthToken(token: string | null): void;
@@ -49,15 +64,24 @@ export interface ClientDataAdapter {
 
   // Clubs & Follows
   listClubs(params?: {search?: string; category?: string; sortBy?: string}): Promise<Club[]>;
+  listClubsPaginated(params?: {
+    search?: string;
+    category?: string;
+    sortBy?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<PaginatedResult<Club>>;
   getClubDetail(clubId: string): Promise<ClubDetail>;
   updateClub(clubId: string, updates: Partial<Club>): Promise<Club>;
   createClub(input: {
     name: string;
+    slug?: string;
     category: Club['category'];
     tagline: string;
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    foundedYear?: number;
     status?: ClubStatus;
   }): Promise<Club>;
 
@@ -71,7 +95,7 @@ export interface ClientDataAdapter {
     input: {
       email?: string;
       userId?: string;
-      role: 'club_admin' | 'core_member';
+      role: ClubRole;
       title: string;
       permissions: CoreMemberPermission[];
     },
@@ -80,12 +104,58 @@ export interface ClientDataAdapter {
     clubId: string,
     membershipId: string,
     updates: {
-      role?: 'club_admin' | 'core_member';
+      role?: ClubRole;
       title?: string;
       permissions?: CoreMemberPermission[];
     },
   ): Promise<ClubMembership>;
   removeClubMember(clubId: string, membershipId: string): Promise<void>;
+
+  // Leadership & Invitations
+  assignClubLeadership(
+    clubId: string,
+    input: {
+      email: string;
+      role: 'president' | 'vice_president';
+      title?: string;
+      replaceExisting?: boolean;
+      sendInvitation?: boolean;
+    },
+  ): Promise<{
+    mode: 'assigned' | 'invited';
+    membership?: ClubMembership;
+    invitation?: ClubInvitation;
+    replacedUserId?: string | null;
+  }>;
+  listClubInvitations(clubId: string): Promise<ClubInvitation[]>;
+  createClubInvitation(
+    clubId: string,
+    input: {
+      email: string;
+      role: ClubRole;
+      title?: string;
+      permissions: CoreMemberPermission[];
+      replaceExisting?: boolean;
+    },
+  ): Promise<ClubInvitation>;
+  resendClubInvitation(clubId: string, invitationId: string): Promise<ClubInvitation>;
+  revokeClubInvitation(clubId: string, invitationId: string): Promise<ClubInvitation>;
+  previewInvitation(token: string): Promise<{
+    invitation: ClubInvitation;
+    clubName: string;
+    clubSlug: string;
+    hasExistingAccount: boolean;
+  }>;
+  acceptInvitation(input: {
+    token: string;
+    name?: string;
+    department?: string;
+    yearOfStudy?: string;
+  }): Promise<{
+    invitation: ClubInvitation;
+    membership: ClubMembership;
+    user: UserAccount;
+  }>;
 
   // Hall of Fame
   getHallOfFame(): Promise<HallOfFameEntry[]>;
@@ -98,6 +168,15 @@ export interface ClientDataAdapter {
     status?: string;
     upcomingOnly?: boolean;
   }): Promise<EventItem[]>;
+  listEventsPaginated(params?: {
+    search?: string;
+    category?: string;
+    clubId?: string;
+    status?: string;
+    upcomingOnly?: boolean;
+    page?: number;
+    pageSize?: number;
+  }): Promise<PaginatedResult<EventItem>>;
   getEventDetail(eventId: string): Promise<EventItem>;
   createEvent(
     clubId: string,
@@ -108,33 +187,66 @@ export interface ClientDataAdapter {
       venue: string;
       startTime: string;
       endTime: string;
+      registrationOpensAt?: string | null;
       registrationDeadline: string;
       capacity: number;
       isPaid: boolean;
       feeAmount: number;
+      eligibilityRules?: EventEligibilityRules;
     },
   ): Promise<EventItem>;
   updateEvent(eventId: string, updates: Partial<EventItem>): Promise<EventItem>;
   publishEvent(eventId: string): Promise<EventItem>;
+  transitionEventLifecycle(eventId: string, action: EventLifecycleAction): Promise<EventItem>;
 
-  getEventForm(eventId: string): Promise<RegistrationForm>;
-  saveEventForm(eventId: string, fields: FormField[]): Promise<RegistrationForm>;
+  getEventForm(eventId: string, version?: number): Promise<RegistrationForm>;
+  saveEventForm(
+    eventId: string,
+    fields: FormField[],
+    meta?: {title?: string; description?: string},
+  ): Promise<RegistrationForm>;
+  publishEventForm(eventId: string): Promise<EventFormVersion>;
+  getPublishedFormVersion(eventId: string, version?: number): Promise<EventFormVersion>;
 
   // Registrations & Attendance
   submitRegistration(
     eventId: string,
-    answers: Record<string, string | boolean | number>,
+    answers: Record<string, FormAnswerValue>,
   ): Promise<Registration>;
+  cancelMyRegistration(eventId: string): Promise<{
+    cancelled: Registration;
+    promotedUserId?: string | null;
+    promotedRegistrationId?: string | null;
+  }>;
   listEventRegistrations(eventId: string): Promise<Registration[]>;
+  listEventRegistrationsPaginated(
+    eventId: string,
+    params?: {page?: number; pageSize?: number; search?: string; status?: string},
+  ): Promise<PaginatedResult<Registration>>;
   listMyRegistrations(): Promise<Registration[]>;
 
   scanAttendance(
     eventId: string,
-    input: {qrToken?: string; registrationId?: string; method: 'qr_scan' | 'manual_override'},
+    input: {
+      qrToken?: string;
+      registrationId?: string;
+      method: 'qr_scan' | 'manual_override';
+      reason?: string;
+    },
+  ): Promise<AttendanceRecord>;
+  manualAttendance(
+    eventId: string,
+    input: {registrationId: string; reason: string},
   ): Promise<AttendanceRecord>;
   getEventAttendance(
     eventId: string,
-  ): Promise<{records: AttendanceRecord[]; registeredCount: number; attendedCount: number}>;
+    params?: {page?: number; pageSize?: number; search?: string},
+  ): Promise<{
+    records: AttendanceRecord[];
+    registeredCount: number;
+    attendedCount: number;
+    pagination?: PaginationMeta;
+  }>;
 
   // Reports & Finance
   submitEventReport(

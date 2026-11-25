@@ -1,5 +1,5 @@
 import type {NextFunction, Request, Response} from 'express';
-import type {ClubMembership, UserAccount} from '../../shared/types/domain.ts';
+import type {ClubMembership, EventItem, UserAccount} from '../../shared/types/domain.ts';
 import type {DataAdapter} from '../adapters/DataAdapter.ts';
 import {env} from '../config/env.ts';
 import {dbRequestContext} from '../db/requestContext.ts';
@@ -9,7 +9,9 @@ import {verifySessionToken} from '../shared/utils/crypto.ts';
 
 export interface AuthenticatedContext {
   user: UserAccount;
+  authUserId?: string;
   memberships: ClubMembership[];
+  followedClubIds?: string[];
   mode: 'demo' | 'supabase';
 }
 
@@ -18,6 +20,7 @@ declare global {
     interface Request {
       auth?: AuthenticatedContext;
       requestId?: string;
+      resolvedEvent?: EventItem;
     }
   }
 }
@@ -61,8 +64,17 @@ export function createAuthenticationMiddleware(adapter: DataAdapter) {
         if (user.status === 'suspended') {
           return next(new ForbiddenError('Your account has been suspended by administration'));
         }
-        const memberships = await adapter.getMembershipsForUser(user.id);
-        req.auth = {user, memberships, mode: 'demo'};
+        const [memberships, follows] = await Promise.all([
+          adapter.getMembershipsForUser(user.id),
+          adapter.getFollowsForUser(user.id),
+        ]);
+        req.auth = {
+          user,
+          authUserId: user.id,
+          memberships,
+          followedClubIds: follows.map((f) => f.clubId),
+          mode: 'demo',
+        };
         return dbRequestContext.run(
           {
             userId: user.id,
@@ -73,24 +85,54 @@ export function createAuthenticationMiddleware(adapter: DataAdapter) {
         );
       }
 
-      // 2. Production / PostgreSQL Supabase JWT verification
+      // 2. Production / PostgreSQL Supabase JWT verification (single-transaction context resolution)
       const claims = await verifySupabaseAccessToken(token);
-      const user = await adapter.provisionAuthenticatedUser({
-        authUserId: claims.authUserId,
-        email: claims.email,
-        name: claims.name,
-        department: claims.department,
-        yearOfStudy: claims.yearOfStudy,
-        emailVerified: claims.emailVerified,
-        isBootstrapSuperAdmin: claims.isBootstrapSuperAdmin,
-      });
+      let user: UserAccount;
+      let memberships: ClubMembership[];
+      let followedClubIds: string[];
+
+      if (adapter.resolveAuthenticatedContext) {
+        const resolved = await adapter.resolveAuthenticatedContext({
+          authUserId: claims.authUserId,
+          email: claims.email,
+          name: claims.name,
+          department: claims.department,
+          yearOfStudy: claims.yearOfStudy,
+          emailVerified: claims.emailVerified,
+          isBootstrapSuperAdmin: claims.isBootstrapSuperAdmin,
+        });
+        user = resolved.user;
+        memberships = resolved.memberships;
+        followedClubIds = resolved.followedClubIds;
+      } else {
+        user = await adapter.provisionAuthenticatedUser({
+          authUserId: claims.authUserId,
+          email: claims.email,
+          name: claims.name,
+          department: claims.department,
+          yearOfStudy: claims.yearOfStudy,
+          emailVerified: claims.emailVerified,
+          isBootstrapSuperAdmin: claims.isBootstrapSuperAdmin,
+        });
+        const [m, f] = await Promise.all([
+          adapter.getMembershipsForUser(user.id),
+          adapter.getFollowsForUser(user.id),
+        ]);
+        memberships = m;
+        followedClubIds = f.map((x) => x.clubId);
+      }
 
       if (user.status === 'suspended') {
         return next(new ForbiddenError('Your account has been suspended by administration'));
       }
 
-      const memberships = await adapter.getMembershipsForUser(user.id);
-      req.auth = {user, memberships, mode: 'supabase'};
+      req.auth = {
+        user,
+        authUserId: claims.authUserId,
+        memberships,
+        followedClubIds,
+        mode: 'supabase',
+      };
 
       return dbRequestContext.run(
         {

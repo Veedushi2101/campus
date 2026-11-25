@@ -93,6 +93,9 @@ export const LandingPage: React.FC = () => {
               <img
                 src="/src/assets/images/hero_campus_quad_1795447592217.jpg"
                 alt="Students collaborating at the modern university student union courtyard"
+                width={1200}
+                height={800}
+                fetchPriority="high"
                 referrerPolicy="no-referrer"
                 className="h-full w-full object-cover"
               />
@@ -104,7 +107,7 @@ export const LandingPage: React.FC = () => {
         <div className="mt-10 grid grid-cols-2 gap-4 border-y border-slate-200 py-6 sm:grid-cols-4">
           <div>
             <p className="font-mono text-2xl font-semibold text-slate-900 tabular-nums">4 Contexts</p>
-            <p className="mt-1 text-xs text-slate-500">Student, Core, Club Admin, Super Admin</p>
+            <p className="mt-1 text-xs text-slate-500">Student, Core, President/VP, Super Admin</p>
           </div>
           <div>
             <p className="font-mono text-2xl font-semibold text-slate-900 tabular-nums">2-Club Cap</p>
@@ -150,6 +153,9 @@ export const LandingPage: React.FC = () => {
               <img
                 src="/src/assets/images/event_hackathon_banner_1795447592033.jpg"
                 alt="Students checking in and collaborating during an engineering hackathon"
+                width={1200}
+                height={675}
+                loading="lazy"
                 referrerPolicy="no-referrer"
                 className="h-full w-full object-cover"
               />
@@ -183,9 +189,9 @@ export const LandingPage: React.FC = () => {
               </span>
             </div>
             <p className="mt-3 text-sm text-slate-600 leading-relaxed">
-              A student can serve as Club Admin in one organization and a Core Member with strictly
-              delegated attendance or reporting rights in another—never mutually exclusive global
-              roles.
+              A student can serve as Club President or Vice President in one organization and a Core
+              Member with strictly delegated attendance or reporting rights in another—never
+              mutually exclusive global roles.
             </p>
           </div>
 
@@ -219,7 +225,7 @@ export const LandingPage: React.FC = () => {
               },
               {
                 step: '02. Configure & Publish',
-                desc: 'Club Admins and permitted Core Members draft events, build custom intake forms, and publish schedules.',
+                desc: 'Club Presidents, Vice Presidents, and permitted Core Members draft events, build custom intake forms, and publish schedules.',
               },
               {
                 step: '03. Register & Verify',
@@ -259,7 +265,7 @@ export const LandingPage: React.FC = () => {
                 </span>
               </div>
               <div className="border-b border-slate-100 pb-3">
-                <span className="font-semibold text-slate-900">Club Admin</span>
+                <span className="font-semibold text-slate-900">Club President &amp; Vice President</span>
                 <span className="mx-2 text-slate-300">·</span>
                 <span className="text-slate-600">
                   Edit club profile, manage core member permissions, publish events, and submit reports.

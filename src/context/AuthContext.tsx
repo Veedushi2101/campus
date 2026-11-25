@@ -8,7 +8,10 @@ import React, {
   useState,
 } from 'react';
 import {useQueryClient} from '@tanstack/react-query';
-import type {CoreMemberPermission} from '../../shared/constants/permissions.ts';
+import {
+  isClubOfficerRole,
+  type CoreMemberPermission,
+} from '../../shared/constants/permissions.ts';
 import type {AuthSessionResponse, ClubMembership, UserAccount} from '../../shared/types/domain.ts';
 import {apiClient} from '../adapters/ApiDataAdapter.ts';
 import {getSupabaseClient} from '../lib/supabase.ts';
@@ -62,7 +65,7 @@ function deriveDefaultContext(session: AuthSessionResponse): {
   if (session.user.isSuperAdmin) {
     return {context: 'super_admin', clubId: null};
   }
-  const adminMembership = session.memberships.find((m) => m.role === 'club_admin');
+  const adminMembership = session.memberships.find((m) => isClubOfficerRole(m.role));
   if (adminMembership) {
     return {context: 'club_admin', clubId: adminMembership.clubId};
   }
@@ -340,7 +343,7 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
       if (context === 'club_admin') {
         const target =
           session.memberships.find(
-            (m) => m.role === 'club_admin' && (!clubId || m.clubId === clubId),
+            (m) => isClubOfficerRole(m.role) && (!clubId || m.clubId === clubId),
           ) || null;
         if (!target) return;
         setActiveClubId(target.clubId);
@@ -373,7 +376,7 @@ export function AuthProvider({children}: {children: React.ReactNode}) {
       if (!session) return false;
       if (session.user.isSuperAdmin && activeContext === 'super_admin') return true;
       if (!activeMembership) return false;
-      if (activeMembership.role === 'club_admin') return true;
+      if (isClubOfficerRole(activeMembership.role)) return true;
       return activeMembership.permissions.includes(permission);
     },
     [session, activeContext, activeMembership],

@@ -2,10 +2,11 @@ import React, {useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {AlertCircle, ArrowLeft, Calendar, Mail, MapPin, UserMinus, UserPlus, Users} from 'lucide-react';
 import {Link, useParams} from 'react-router-dom';
+import {CLUB_ROLE_LABELS} from '../../../shared/constants/permissions.ts';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {Button} from '../../components/ui/Button.tsx';
 import {Card} from '../../components/ui/FormControls.tsx';
-import {ClubLogo, LoadingSkeleton} from '../../components/ui/Feedback.tsx';
+import {ClubLogo, LoadingSkeleton, StatusLabel} from '../../components/ui/Feedback.tsx';
 import {useAuth} from '../../context/AuthContext.tsx';
 import {useToast} from '../../context/ToastContext.tsx';
 
@@ -30,6 +31,7 @@ export const ClubDetailsPage: React.FC = () => {
       await Promise.all([
         queryClient.invalidateQueries({queryKey: ['club', clubId]}),
         queryClient.invalidateQueries({queryKey: ['clubs']}),
+        queryClient.invalidateQueries({queryKey: ['clubs-paginated']}),
         queryClient.invalidateQueries({queryKey: ['hall-of-fame']}),
         queryClient.invalidateQueries({queryKey: ['followed-clubs']}),
       ]);
@@ -50,6 +52,7 @@ export const ClubDetailsPage: React.FC = () => {
       await Promise.all([
         queryClient.invalidateQueries({queryKey: ['club', clubId]}),
         queryClient.invalidateQueries({queryKey: ['clubs']}),
+        queryClient.invalidateQueries({queryKey: ['clubs-paginated']}),
         queryClient.invalidateQueries({queryKey: ['hall-of-fame']}),
         queryClient.invalidateQueries({queryKey: ['followed-clubs']}),
       ]);
@@ -161,12 +164,15 @@ export const ClubDetailsPage: React.FC = () => {
               {club.upcomingEvents.map((ev) => (
                 <div key={ev.id} className="flex items-center justify-between gap-4 py-4">
                   <div className="min-w-0">
-                    <Link
-                      to={`/app/student/events/${ev.id}`}
-                      className="text-sm font-semibold text-slate-900 hover:text-violet-700"
-                    >
-                      {ev.title}
-                    </Link>
+                    <div className="flex items-center gap-2">
+                      <Link
+                        to={`/app/student/events/${ev.id}`}
+                        className="text-sm font-semibold text-slate-900 hover:text-violet-700"
+                      >
+                        {ev.title}
+                      </Link>
+                      <StatusLabel status={ev.status} />
+                    </div>
                     <p className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-500">
                       <span className="inline-flex items-center gap-1">
                         <Calendar className="h-3.5 w-3.5" />
@@ -212,8 +218,8 @@ export const ClubDetailsPage: React.FC = () => {
                       <p className="truncate text-xs text-slate-500">{member.title}</p>
                     </div>
                   </div>
-                  <span className="text-xs font-medium text-slate-600 capitalize whitespace-nowrap">
-                    {member.role.replace('_', ' ')}
+                  <span className="text-xs font-medium text-slate-600 whitespace-nowrap">
+                    {CLUB_ROLE_LABELS[member.role] || member.role.replace('_', ' ')}
                   </span>
                 </div>
               ))}

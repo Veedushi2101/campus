@@ -1,12 +1,32 @@
-import type {CoreMemberPermission, ClubCategory, EventCategory} from '../constants/permissions.ts';
+import type {
+  ClubCategory,
+  CoreMemberPermission,
+  EventCategory,
+  FormFieldTypeValue,
+} from '../constants/permissions.ts';
 export type {CoreMemberPermission, ClubCategory, EventCategory};
 
 export type AccountStatus = 'active' | 'suspended' | 'pending_verification';
 export type ClubStatus = 'active' | 'inactive' | 'suspended' | 'pending_review';
-export type ClubRole = 'club_admin' | 'core_member';
-export type EventStatus = 'draft' | 'published' | 'completed' | 'cancelled';
+export type ClubRole = 'president' | 'vice_president' | 'core_member';
+export type EventStatus =
+  | 'draft'
+  | 'published'
+  | 'registration_open'
+  | 'registration_closed'
+  | 'completed'
+  | 'cancelled';
 export type RegistrationStatus = 'confirmed' | 'waitlisted' | 'cancelled' | 'attended';
-export type FormFieldType = 'text' | 'email' | 'number' | 'select' | 'checkbox' | 'textarea';
+export type FormFieldType = FormFieldTypeValue;
+export type FormAnswerValue = string | boolean | number | string[];
+export type InvitationStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
+export type LeadershipAssignmentState =
+  | 'not_assigned'
+  | 'pending'
+  | 'accepted'
+  | 'active'
+  | 'expired'
+  | 'revoked';
 
 export interface UserAccount {
   id: string;
@@ -32,8 +52,28 @@ export interface ClubMembership {
   role: ClubRole;
   title: string;
   permissions: CoreMemberPermission[];
+  canScanQr?: boolean;
   assignedTasks?: string[];
   joinedAt: string;
+}
+
+export interface ClubInvitation {
+  id: string;
+  clubId: string;
+  clubName?: string;
+  inviterUserId?: string | null;
+  inviterName?: string;
+  inviteeEmail: string;
+  intendedRole: ClubRole;
+  title: string;
+  permissions: CoreMemberPermission[];
+  status: InvitationStatus;
+  expiresAt: string;
+  acceptedAt?: string | null;
+  revokedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deliveryMode?: 'supabase_admin' | 'test_adapter' | 'smtp';
 }
 
 export interface ClubFollow {
@@ -75,43 +115,82 @@ export interface HallOfFameEntry {
   tieCount: number;
 }
 
+export interface EventEligibilityRules {
+  allowedDomains?: string[];
+  allowedDepartments?: string[];
+  allowedYears?: string[];
+  notes?: string;
+}
+
 export interface EventItem {
   id: string;
   clubId: string;
   clubName: string;
   title: string;
+  slug?: string;
   category: EventCategory;
   description: string;
   venue: string;
   startTime: string;
   endTime: string;
+  registrationOpensAt?: string | null;
+  registrationDeadline: string;
   capacity: number;
   registeredCount: number;
+  waitlistedCount?: number;
   attendedCount: number;
   status: EventStatus;
   bannerUrl: string;
-  registrationDeadline: string;
   isPaid: boolean;
   feeAmount: number;
+  feeMinorUnits?: number;
+  eligibilityRules?: EventEligibilityRules;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface FormFieldValidationRules {
+  minLength?: number;
+  maxLength?: number;
+  min?: number;
+  max?: number;
+  pattern?: string;
+  patternMessage?: string;
 }
 
 export interface FormField {
   id: string;
   label: string;
+  description?: string;
   type: FormFieldType;
   required: boolean;
   placeholder?: string;
   options?: string[];
+  validationRules?: FormFieldValidationRules;
 }
 
 export interface RegistrationForm {
   id: string;
   eventId: string;
   version: number;
+  status?: 'draft' | 'published';
+  publishedVersion?: number;
+  title?: string;
+  description?: string;
   fields: FormField[];
   updatedAt: string;
+}
+
+export interface EventFormVersion {
+  id: string;
+  formId: string;
+  eventId: string;
+  version: number;
+  title: string;
+  description: string;
+  fields: FormField[];
+  publishedBy?: string | null;
+  publishedAt: string;
 }
 
 export interface QrCredential {
@@ -133,8 +212,12 @@ export interface Registration {
   studentId: string;
   studentName: string;
   studentEmail: string;
-  answers: Record<string, string | boolean | number>;
+  formVersion?: number;
+  formVersionId?: string | null;
+  answers: Record<string, FormAnswerValue>;
   status: RegistrationStatus;
+  attendanceStatus?: 'present' | 'not_checked_in';
+  waitlistPosition?: number | null;
   qrToken: string;
   qrUsedAt: string | null;
   createdAt: string;
@@ -149,6 +232,7 @@ export interface AttendanceRecord {
   studentCode: string;
   qrToken: string;
   method: 'qr_scan' | 'manual_override';
+  manualReason?: string | null;
   checkedInBy: string;
   checkedInAt: string;
 }
@@ -212,7 +296,7 @@ export interface AuditLogEntry {
   actorName: string;
   actorContext: string;
   action: string;
-  targetType: 'club' | 'user' | 'event' | 'report' | 'membership' | 'system';
+  targetType: 'club' | 'user' | 'event' | 'report' | 'membership' | 'invitation' | 'system';
   targetId: string;
   targetLabel: string;
   details: string;
@@ -245,6 +329,18 @@ export interface SystemSettings {
   allowStudentEventFeedback: boolean;
   phaseLabel: string;
   persistenceMode: 'in_memory_demo' | 'postgres';
+}
+
+export interface PaginationMeta {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface PaginatedResult<T> {
+  items: T[];
+  pagination: PaginationMeta;
 }
 
 export interface ApiSuccessResponse<T> {

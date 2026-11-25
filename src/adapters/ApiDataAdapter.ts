@@ -8,22 +8,29 @@ import type {
   Club,
   ClubDetail,
   ClubFollow,
+  ClubInvitation,
   ClubMembership,
+  ClubRole,
   ClubStatus,
   CoreMemberPermission,
+  EventEligibilityRules,
+  EventFormVersion,
   EventItem,
   EventReport,
   FinancialLineItem,
   FinancialReport,
+  FormAnswerValue,
   FormField,
   HallOfFameEntry,
   NotificationItem,
+  PaginatedResult,
+  PaginationMeta,
   Registration,
   RegistrationForm,
   SystemSettings,
   UserAccount,
 } from '../../shared/types/domain.ts';
-import type {ClientDataAdapter} from './DataAdapter.ts';
+import type {ClientDataAdapter, EventLifecycleAction} from './DataAdapter.ts';
 
 export class ApiClientError extends Error {
   public readonly status: number;
@@ -45,7 +52,10 @@ export class ApiDataAdapter implements ClientDataAdapter {
     this.authToken = token;
   }
 
-  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  private async requestWithMeta<T>(
+    path: string,
+    options: RequestInit = {},
+  ): Promise<{data: T; meta?: Record<string, unknown>}> {
     const headers = new Headers(options.headers);
     if (!headers.has('Content-Type') && options.body) {
       headers.set('Content-Type', 'application/json');
@@ -69,7 +79,40 @@ export class ApiDataAdapter implements ClientDataAdapter {
         err?.details,
       );
     }
-    return json.data;
+    return {data: json.data, meta: json.meta};
+  }
+
+  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const {data} = await this.requestWithMeta<T>(path, options);
+    return data;
+  }
+
+  async downloadEventCsv(
+    eventId: string,
+    kind: 'registrations' | 'attendance',
+  ): Promise<{blob: Blob; filename: string}> {
+    const headers = new Headers();
+    if (this.authToken) {
+      headers.set('Authorization', `Bearer ${this.authToken}`);
+    }
+    const res = await fetch(
+      `${API_PREFIX}/events/${encodeURIComponent(eventId)}/${kind}/export`,
+      {headers},
+    );
+    if (!res.ok) {
+      const json = (await res.json().catch(() => null)) as ApiResponse<unknown> | null;
+      const err = json && !json.success ? json.error : null;
+      throw new ApiClientError(
+        res.status,
+        err?.code || 'EXPORT_FAILED',
+        err?.message || `CSV export failed (${res.status})`,
+      );
+    }
+    const cd = res.headers.get('content-disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/i);
+    const filename = match?.[1] || `${kind}-${eventId}.csv`;
+    const blob = await res.blob();
+    return {blob, filename};
   }
 
   getHealth() {
@@ -139,6 +182,29 @@ export class ApiDataAdapter implements ClientDataAdapter {
     return this.request<Club[]>(`/clubs${query ? `?${query}` : ''}`);
   }
 
+  async listClubsPaginated(params?: {
+    search?: string;
+    category?: string;
+    sortBy?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<PaginatedResult<Club>> {
+    const qs = new URLSearchParams();
+    if (params?.search) qs.set('search', params.search);
+    if (params?.category && params.category !== 'All') qs.set('category', params.category);
+    if (params?.sortBy) qs.set('sortBy', params.sortBy);
+    qs.set('page', String(params?.page ?? 1));
+    qs.set('pageSize', String(params?.pageSize ?? 12));
+    const {data, meta} = await this.requestWithMeta<Club[]>(`/clubs?${qs.toString()}`);
+    const pagination = (meta?.pagination as PaginationMeta) || {
+      page: params?.page ?? 1,
+      pageSize: params?.pageSize ?? 12,
+      total: data.length,
+      totalPages: 1,
+    };
+    return {items: data, pagination};
+  }
+
   getClubDetail(clubId: string) {
     return this.request<ClubDetail>(`/clubs/${encodeURIComponent(clubId)}`);
   }
@@ -152,11 +218,13 @@ export class ApiDataAdapter implements ClientDataAdapter {
 
   createClub(input: {
     name: string;
+    slug?: string;
     category: Club['category'];
     tagline: string;
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    foundedYear?: number;
     status?: ClubStatus;
   }) {
     return this.request<Club>('/clubs', {
@@ -194,7 +262,7 @@ export class ApiDataAdapter implements ClientDataAdapter {
     input: {
       email?: string;
       userId?: string;
-      role: 'club_admin' | 'core_member';
+      role: ClubRole;
       title: string;
       permissions: CoreMemberPermission[];
     },
@@ -209,7 +277,7 @@ export class ApiDataAdapter implements ClientDataAdapter {
     clubId: string,
     membershipId: string,
     updates: {
-      role?: 'club_admin' | 'core_member';
+      role?: ClubRole;
       title?: string;
       permissions?: CoreMemberPermission[];
     },
@@ -228,6 +296,86 @@ export class ApiDataAdapter implements ClientDataAdapter {
       `/clubs/${encodeURIComponent(clubId)}/members/${encodeURIComponent(membershipId)}`,
       {method: 'DELETE'},
     );
+  }
+
+  assignClubLeadership(
+    clubId: string,
+    input: {
+      email: string;
+      role: 'president' | 'vice_president';
+      title?: string;
+      replaceExisting?: boolean;
+      sendInvitation?: boolean;
+    },
+  ) {
+    return this.request<{
+      mode: 'assigned' | 'invited';
+      membership?: ClubMembership;
+      invitation?: ClubInvitation;
+      replacedUserId?: string | null;
+    }>(`/admin/clubs/${encodeURIComponent(clubId)}/leadership`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  listClubInvitations(clubId: string) {
+    return this.request<ClubInvitation[]>(`/clubs/${encodeURIComponent(clubId)}/invitations`);
+  }
+
+  createClubInvitation(
+    clubId: string,
+    input: {
+      email: string;
+      role: ClubRole;
+      title?: string;
+      permissions: CoreMemberPermission[];
+      replaceExisting?: boolean;
+    },
+  ) {
+    return this.request<ClubInvitation>(`/clubs/${encodeURIComponent(clubId)}/invitations`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  resendClubInvitation(clubId: string, invitationId: string) {
+    return this.request<ClubInvitation>(
+      `/clubs/${encodeURIComponent(clubId)}/invitations/${encodeURIComponent(invitationId)}/resend`,
+      {method: 'POST'},
+    );
+  }
+
+  revokeClubInvitation(clubId: string, invitationId: string) {
+    return this.request<ClubInvitation>(
+      `/clubs/${encodeURIComponent(clubId)}/invitations/${encodeURIComponent(invitationId)}`,
+      {method: 'DELETE'},
+    );
+  }
+
+  previewInvitation(token: string) {
+    return this.request<{
+      invitation: ClubInvitation;
+      clubName: string;
+      clubSlug: string;
+      hasExistingAccount: boolean;
+    }>(`/invitations/preview?token=${encodeURIComponent(token)}`);
+  }
+
+  acceptInvitation(input: {
+    token: string;
+    name?: string;
+    department?: string;
+    yearOfStudy?: string;
+  }) {
+    return this.request<{
+      invitation: ClubInvitation;
+      membership: ClubMembership;
+      user: UserAccount;
+    }>('/invitations/accept', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 
   getHallOfFame() {
@@ -251,6 +399,33 @@ export class ApiDataAdapter implements ClientDataAdapter {
     return this.request<EventItem[]>(`/events${query ? `?${query}` : ''}`);
   }
 
+  async listEventsPaginated(params?: {
+    search?: string;
+    category?: string;
+    clubId?: string;
+    status?: string;
+    upcomingOnly?: boolean;
+    page?: number;
+    pageSize?: number;
+  }): Promise<PaginatedResult<EventItem>> {
+    const qs = new URLSearchParams();
+    if (params?.search) qs.set('search', params.search);
+    if (params?.category && params.category !== 'All') qs.set('category', params.category);
+    if (params?.clubId && params.clubId !== 'All') qs.set('clubId', params.clubId);
+    if (params?.status && params.status !== 'All') qs.set('status', params.status);
+    if (params?.upcomingOnly) qs.set('upcomingOnly', 'true');
+    qs.set('page', String(params?.page ?? 1));
+    qs.set('pageSize', String(params?.pageSize ?? 12));
+    const {data, meta} = await this.requestWithMeta<EventItem[]>(`/events?${qs.toString()}`);
+    const pagination = (meta?.pagination as PaginationMeta) || {
+      page: params?.page ?? 1,
+      pageSize: params?.pageSize ?? 12,
+      total: data.length,
+      totalPages: 1,
+    };
+    return {items: data, pagination};
+  }
+
   getEventDetail(eventId: string) {
     return this.request<EventItem>(`/events/${encodeURIComponent(eventId)}`);
   }
@@ -264,10 +439,12 @@ export class ApiDataAdapter implements ClientDataAdapter {
       venue: string;
       startTime: string;
       endTime: string;
+      registrationOpensAt?: string | null;
       registrationDeadline: string;
       capacity: number;
       isPaid: boolean;
       feeAmount: number;
+      eligibilityRules?: EventEligibilityRules;
     },
   ) {
     return this.request<EventItem>(`/clubs/${encodeURIComponent(clubId)}/events`, {
@@ -289,26 +466,79 @@ export class ApiDataAdapter implements ClientDataAdapter {
     });
   }
 
-  getEventForm(eventId: string) {
-    return this.request<RegistrationForm>(`/events/${encodeURIComponent(eventId)}/form`);
-  }
-
-  saveEventForm(eventId: string, fields: FormField[]) {
-    return this.request<RegistrationForm>(`/events/${encodeURIComponent(eventId)}/form`, {
-      method: 'PUT',
-      body: JSON.stringify({fields}),
+  transitionEventLifecycle(eventId: string, action: EventLifecycleAction) {
+    return this.request<EventItem>(`/events/${encodeURIComponent(eventId)}/${action}`, {
+      method: 'POST',
     });
   }
 
-  submitRegistration(eventId: string, answers: Record<string, string | boolean | number>) {
+  getEventForm(eventId: string, version?: number) {
+    const query = version ? `?version=${version}` : '';
+    return this.request<RegistrationForm>(`/events/${encodeURIComponent(eventId)}/form${query}`);
+  }
+
+  saveEventForm(
+    eventId: string,
+    fields: FormField[],
+    meta?: {title?: string; description?: string},
+  ) {
+    return this.request<RegistrationForm>(`/events/${encodeURIComponent(eventId)}/form`, {
+      method: 'PUT',
+      body: JSON.stringify({fields, title: meta?.title, description: meta?.description}),
+    });
+  }
+
+  publishEventForm(eventId: string) {
+    return this.request<EventFormVersion>(`/events/${encodeURIComponent(eventId)}/form/publish`, {
+      method: 'POST',
+    });
+  }
+
+  getPublishedFormVersion(eventId: string, version?: number) {
+    const query = version ? `?version=${version}` : '?version=1';
+    return this.request<EventFormVersion>(`/events/${encodeURIComponent(eventId)}/form${query}`);
+  }
+
+  submitRegistration(eventId: string, answers: Record<string, FormAnswerValue>) {
     return this.request<Registration>(`/events/${encodeURIComponent(eventId)}/registrations`, {
       method: 'POST',
       body: JSON.stringify({answers}),
     });
   }
 
+  cancelMyRegistration(eventId: string) {
+    return this.request<{
+      cancelled: Registration;
+      promotedUserId?: string | null;
+      promotedRegistrationId?: string | null;
+    }>(`/events/${encodeURIComponent(eventId)}/registrations/me`, {
+      method: 'DELETE',
+    });
+  }
+
   listEventRegistrations(eventId: string) {
     return this.request<Registration[]>(`/events/${encodeURIComponent(eventId)}/registrations`);
+  }
+
+  async listEventRegistrationsPaginated(
+    eventId: string,
+    params?: {page?: number; pageSize?: number; search?: string; status?: string},
+  ): Promise<PaginatedResult<Registration>> {
+    const qs = new URLSearchParams();
+    if (params?.search) qs.set('search', params.search);
+    if (params?.status && params.status !== 'all') qs.set('status', params.status);
+    qs.set('page', String(params?.page ?? 1));
+    qs.set('pageSize', String(params?.pageSize ?? 25));
+    const {data, meta} = await this.requestWithMeta<Registration[]>(
+      `/events/${encodeURIComponent(eventId)}/registrations?${qs.toString()}`,
+    );
+    const pagination = (meta?.pagination as PaginationMeta) || {
+      page: params?.page ?? 1,
+      pageSize: params?.pageSize ?? 25,
+      total: data.length,
+      totalPages: 1,
+    };
+    return {items: data, pagination};
   }
 
   listMyRegistrations() {
@@ -317,7 +547,12 @@ export class ApiDataAdapter implements ClientDataAdapter {
 
   scanAttendance(
     eventId: string,
-    input: {qrToken?: string; registrationId?: string; method: 'qr_scan' | 'manual_override'},
+    input: {
+      qrToken?: string;
+      registrationId?: string;
+      method: 'qr_scan' | 'manual_override';
+      reason?: string;
+    },
   ) {
     return this.request<AttendanceRecord>(`/events/${encodeURIComponent(eventId)}/attendance/scan`, {
       method: 'POST',
@@ -325,10 +560,28 @@ export class ApiDataAdapter implements ClientDataAdapter {
     });
   }
 
-  getEventAttendance(eventId: string) {
-    return this.request<{records: AttendanceRecord[]; registeredCount: number; attendedCount: number}>(
-      `/events/${encodeURIComponent(eventId)}/attendance`,
-    );
+  manualAttendance(eventId: string, input: {registrationId: string; reason: string}) {
+    return this.request<AttendanceRecord>(`/events/${encodeURIComponent(eventId)}/attendance/manual`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  getEventAttendance(
+    eventId: string,
+    params?: {page?: number; pageSize?: number; search?: string},
+  ) {
+    const qs = new URLSearchParams();
+    if (params?.page !== undefined) qs.set('page', String(params.page));
+    if (params?.pageSize !== undefined) qs.set('pageSize', String(params.pageSize));
+    if (params?.search) qs.set('search', params.search);
+    const query = qs.toString();
+    return this.request<{
+      records: AttendanceRecord[];
+      registeredCount: number;
+      attendedCount: number;
+      pagination?: PaginationMeta;
+    }>(`/events/${encodeURIComponent(eventId)}/attendance${query ? `?${query}` : ''}`);
   }
 
   submitEventReport(

@@ -1,6 +1,6 @@
 import React, {useState} from 'react';
-import {useQuery} from '@tanstack/react-query';
-import {Calendar, MapPin, QrCode, Ticket} from 'lucide-react';
+import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
+import {Calendar, CheckCircle2, Clock, MapPin, QrCode, Ticket} from 'lucide-react';
 import {QRCodeSVG} from 'qrcode.react';
 import {Link} from 'react-router-dom';
 import type {Registration} from '../../../shared/types/domain.ts';
@@ -9,19 +9,44 @@ import {Button} from '../../components/ui/Button.tsx';
 import {Card} from '../../components/ui/FormControls.tsx';
 import {EmptyState, LoadingSkeleton, Modal, StatusLabel} from '../../components/ui/Feedback.tsx';
 import {useAuth} from '../../context/AuthContext.tsx';
+import {useToast} from '../../context/ToastContext.tsx';
 
 export const MyRegistrationsPage: React.FC = () => {
   const {user} = useAuth();
+  const {toast} = useToast();
+  const queryClient = useQueryClient();
   const [tab, setTab] = useState<'upcoming' | 'past'>('upcoming');
   const [selectedPass, setSelectedPass] = useState<Registration | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<Registration | null>(null);
 
   const {data: registrations = [], isLoading} = useQuery({
     queryKey: ['my-registrations', user?.id],
     queryFn: () => apiClient.listMyRegistrations(),
   });
 
-  const upcoming = registrations.filter((r) => r.status === 'confirmed' || r.status === 'waitlisted');
-  const past = registrations.filter((r) => r.status === 'attended' || r.status === 'cancelled');
+  const cancelMutation = useMutation({
+    mutationFn: (eventId: string) => apiClient.cancelMyRegistration(eventId),
+    onSuccess: async (_res, eventId) => {
+      setCancelTarget(null);
+      await Promise.all([
+        queryClient.invalidateQueries({queryKey: ['my-registrations']}),
+        queryClient.invalidateQueries({queryKey: ['event', eventId]}),
+        queryClient.invalidateQueries({queryKey: ['events']}),
+        queryClient.invalidateQueries({queryKey: ['notifications']}),
+      ]);
+      toast.info('Registration cancelled', 'Seat released to the FIFO waitlist.');
+    },
+    onError: (err) => {
+      toast.error('Cancellation failed', err instanceof Error ? err.message : undefined);
+    },
+  });
+
+  const upcoming = registrations.filter(
+    (r) => (r.status === 'confirmed' || r.status === 'waitlisted') && !r.qrUsedAt,
+  );
+  const past = registrations.filter(
+    (r) => r.status === 'attended' || r.status === 'cancelled' || Boolean(r.qrUsedAt),
+  );
   const activeList = tab === 'upcoming' ? upcoming : past;
 
   return (
@@ -30,7 +55,7 @@ export const MyRegistrationsPage: React.FC = () => {
         <div>
           <h1 className="font-display text-2xl font-bold text-slate-900">My Registrations</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Access your event tickets, non-PII QR passes, and check-in history.
+            Access your event tickets, non-PII QR passes, waitlist positions, and check-in history.
           </p>
         </div>
 
@@ -74,44 +99,82 @@ export const MyRegistrationsPage: React.FC = () => {
         />
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {activeList.map((reg) => (
-            <Card key={reg.id} className="p-6 flex flex-col justify-between">
-              <div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-violet-700">{reg.clubName}</span>
-                  <StatusLabel status={reg.status} />
-                </div>
-                <Link
-                  to={`/app/student/events/${reg.eventId}`}
-                  className="mt-2 block font-display text-base font-semibold text-slate-900 hover:text-violet-700"
-                >
-                  {reg.eventTitle}
-                </Link>
-                <div className="mt-3 space-y-1 text-xs text-slate-500">
-                  {reg.eventStartTime && (
-                    <p className="flex items-center gap-2">
-                      <Calendar className="h-3.5 w-3.5" />
-                      <span>{new Date(reg.eventStartTime).toLocaleString()}</span>
-                    </p>
-                  )}
-                  {reg.eventVenue && (
-                    <p className="flex items-center gap-2">
-                      <MapPin className="h-3.5 w-3.5" />
-                      <span>{reg.eventVenue}</span>
-                    </p>
-                  )}
-                </div>
-              </div>
+          {activeList.map((reg) => {
+            const checkedIn =
+              Boolean(reg.qrUsedAt) ||
+              reg.attendanceStatus === 'present' ||
+              reg.status === 'attended';
+            const canCancel =
+              !checkedIn && (reg.status === 'confirmed' || reg.status === 'waitlisted');
 
-              <div className="mt-5 flex items-center justify-between border-t border-slate-100 pt-4">
-                <span className="font-mono text-xs text-slate-600">{reg.qrToken}</span>
-                <Button size="sm" variant="outline" onClick={() => setSelectedPass(reg)}>
-                  <QrCode className="h-3.5 w-3.5" />
-                  Open QR Pass
-                </Button>
-              </div>
-            </Card>
-          ))}
+            return (
+              <Card key={reg.id} className="p-6 flex flex-col justify-between">
+                <div>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-violet-700">{reg.clubName}</span>
+                    <div className="flex items-center gap-2.5">
+                      <StatusLabel status={reg.status} />
+                      {reg.status === 'waitlisted' && reg.waitlistPosition ? (
+                        <span className="font-mono text-xs font-semibold text-amber-800">
+                          #{reg.waitlistPosition}
+                        </span>
+                      ) : null}
+                      {checkedIn ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          Checked In
+                        </span>
+                      ) : reg.status === 'confirmed' ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                          <Clock className="h-3.5 w-3.5" />
+                          Pending Scan
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <Link
+                    to={`/app/student/events/${reg.eventId}`}
+                    className="mt-2 block font-display text-base font-semibold text-slate-900 hover:text-violet-700"
+                  >
+                    {reg.eventTitle}
+                  </Link>
+                  <div className="mt-3 space-y-1 text-xs text-slate-500">
+                    {reg.eventStartTime && (
+                      <p className="flex items-center gap-2">
+                        <Calendar className="h-3.5 w-3.5" />
+                        <span>{new Date(reg.eventStartTime).toLocaleString()}</span>
+                      </p>
+                    )}
+                    {reg.eventVenue && (
+                      <p className="flex items-center gap-2">
+                        <MapPin className="h-3.5 w-3.5" />
+                        <span>{reg.eventVenue}</span>
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4">
+                  <span className="font-mono text-xs text-slate-600">{reg.qrToken}</span>
+                  <div className="flex items-center gap-2">
+                    {canCancel && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setCancelTarget(reg)}
+                      >
+                        Cancel
+                      </Button>
+                    )}
+                    <Button size="sm" variant="outline" onClick={() => setSelectedPass(reg)}>
+                      <QrCode className="h-3.5 w-3.5" />
+                      Open QR Pass
+                    </Button>
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
         </div>
       )}
 
@@ -129,8 +192,13 @@ export const MyRegistrationsPage: React.FC = () => {
             <p className="mt-4 font-mono text-base font-semibold text-slate-900">
               {selectedPass.qrToken}
             </p>
-            <div className="mt-2">
+            <div className="mt-2 flex items-center gap-2">
               <StatusLabel status={selectedPass.status} />
+              {selectedPass.status === 'waitlisted' && selectedPass.waitlistPosition ? (
+                <span className="font-mono text-xs text-amber-800">
+                  Waitlist #{selectedPass.waitlistPosition}
+                </span>
+              ) : null}
             </div>
             {selectedPass.qrUsedAt && (
               <p className="mt-2 text-xs text-slate-500">
@@ -139,6 +207,32 @@ export const MyRegistrationsPage: React.FC = () => {
             )}
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={Boolean(cancelTarget)}
+        onClose={() => setCancelTarget(null)}
+        title="Cancel Registration"
+        subtitle={cancelTarget?.eventTitle}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600">
+            Cancelling releases your spot and automatically promotes the first student on the FIFO
+            waitlist.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setCancelTarget(null)}>
+              Keep Registration
+            </Button>
+            <Button
+              variant="danger"
+              loading={cancelMutation.isPending}
+              onClick={() => cancelTarget && cancelMutation.mutate(cancelTarget.eventId)}
+            >
+              Confirm Cancellation
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

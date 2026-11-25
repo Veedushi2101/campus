@@ -1,9 +1,16 @@
-import {asc, eq, or} from 'drizzle-orm';
+import {and, asc, eq, or} from 'drizzle-orm';
 import type {UserAccount} from '../../../shared/types/domain.ts';
+import type {ResolvedAuthContext} from '../../adapters/DataAdapter.ts';
 import {ForbiddenError} from '../../shared/errors/AppError.ts';
-import {withRlsTransaction} from '../index.ts';
-import {authSessions, users} from '../schema.ts';
-import {computeInitials, isPgUniqueViolation, isUuid, mapUserRow} from './mappers.ts';
+import {withRlsTransaction, type DbTx} from '../index.ts';
+import {authSessions, clubFollows, clubMemberships, clubs, users} from '../schema.ts';
+import {
+  computeInitials,
+  isPgUniqueViolation,
+  isUuid,
+  mapMembershipRow,
+  mapUserRow,
+} from './mappers.ts';
 
 export class UsersRepository {
   async getUserById(userId: string): Promise<UserAccount | null> {
@@ -35,15 +42,18 @@ export class UsersRepository {
     );
   }
 
-  async provisionAuthenticatedUser(input: {
-    authUserId: string;
-    email: string;
-    name?: string;
-    department?: string;
-    yearOfStudy?: string;
-    emailVerified: boolean;
-    isBootstrapSuperAdmin: boolean;
-  }): Promise<UserAccount> {
+  async resolveOrProvisionUserTx(
+    tx: DbTx,
+    input: {
+      authUserId: string;
+      email: string;
+      name?: string;
+      department?: string;
+      yearOfStudy?: string;
+      emailVerified: boolean;
+      isBootstrapSuperAdmin: boolean;
+    },
+  ): Promise<UserAccount> {
     if (!input.emailVerified) {
       throw new ForbiddenError(
         'Please verify your institutional email address before accessing CampusVerse',
@@ -58,10 +68,68 @@ export class UsersRepository {
         .replace(/[._-]+/g, ' ')
         .replace(/\b\w/g, (c) => c.toUpperCase());
 
-    return withRlsTransaction(
-      'users.provisionAuthenticated',
-      async (tx) => {
-        const existing = await tx
+    const existing = await tx
+      .select()
+      .from(users)
+      .where(
+        or(
+          eq(users.authUserId, input.authUserId),
+          eq(users.normalizedEmail, normalizedEmail),
+        ),
+      )
+      .limit(1);
+
+    if (existing[0]) {
+      const row = existing[0];
+      const nextGlobalRole =
+        input.isBootstrapSuperAdmin && row.globalRole !== 'super_admin'
+          ? 'super_admin'
+          : row.globalRole;
+      const nextVerifiedAt =
+        row.emailVerifiedAt || (input.emailVerified ? new Date() : null);
+
+      if (
+        row.authUserId !== input.authUserId ||
+        nextGlobalRole !== row.globalRole ||
+        nextVerifiedAt !== row.emailVerifiedAt
+      ) {
+        const updated = await tx
+          .update(users)
+          .set({
+            authUserId: input.authUserId,
+            globalRole: nextGlobalRole,
+            emailVerifiedAt: nextVerifiedAt,
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, row.id))
+          .returning();
+        return mapUserRow(updated[0]);
+      }
+      return mapUserRow(row);
+    }
+
+    const studentCode = `STU-${new Date().getFullYear()}-${input.authUserId.slice(0, 6).toUpperCase()}`;
+    try {
+      const inserted = await tx
+        .insert(users)
+        .values({
+          authUserId: input.authUserId,
+          email: input.email.trim(),
+          normalizedEmail,
+          displayName: displayName || 'CampusVerse Student',
+          department: input.department?.trim() || 'Computer Science & Engineering',
+          yearOfStudy: input.yearOfStudy?.trim() || 'Undergraduate',
+          studentId: studentCode,
+          globalRole: input.isBootstrapSuperAdmin ? 'super_admin' : 'user',
+          accountStatus: 'active',
+          emailVerifiedAt: new Date(),
+        })
+        .returning();
+
+      return mapUserRow(inserted[0]);
+    } catch (err: unknown) {
+      if (isPgUniqueViolation(err)) {
+        const raced = await tx
           .select()
           .from(users)
           .where(
@@ -71,71 +139,72 @@ export class UsersRepository {
             ),
           )
           .limit(1);
+        if (raced[0]) return mapUserRow(raced[0]);
+      }
+      throw err;
+    }
+  }
 
-        if (existing[0]) {
-          const row = existing[0];
-          const nextGlobalRole =
-            input.isBootstrapSuperAdmin && row.globalRole !== 'super_admin'
-              ? 'super_admin'
-              : row.globalRole;
-          const nextVerifiedAt =
-            row.emailVerifiedAt || (input.emailVerified ? new Date() : null);
+  async provisionAuthenticatedUser(input: {
+    authUserId: string;
+    email: string;
+    name?: string;
+    department?: string;
+    yearOfStudy?: string;
+    emailVerified: boolean;
+    isBootstrapSuperAdmin: boolean;
+  }): Promise<UserAccount> {
+    return withRlsTransaction(
+      'users.provisionAuthenticated',
+      async (tx) => this.resolveOrProvisionUserTx(tx, input),
+      {globalRole: 'auth_resolver'},
+    );
+  }
 
-          if (
-            row.authUserId !== input.authUserId ||
-            nextGlobalRole !== row.globalRole ||
-            nextVerifiedAt !== row.emailVerifiedAt
-          ) {
-            const updated = await tx
-              .update(users)
-              .set({
-                authUserId: input.authUserId,
-                globalRole: nextGlobalRole,
-                emailVerifiedAt: nextVerifiedAt,
-                updatedAt: new Date(),
-              })
-              .where(eq(users.id, row.id))
-              .returning();
-            return mapUserRow(updated[0]);
-          }
-          return mapUserRow(row);
-        }
+  /**
+   * Single-transaction authenticated context resolver:
+   * Resolves/provisions user + loads active memberships + followed club IDs in one DB round-trip tx.
+   */
+  async resolveAuthenticatedContext(input: {
+    authUserId: string;
+    email: string;
+    name?: string;
+    department?: string;
+    yearOfStudy?: string;
+    emailVerified: boolean;
+    isBootstrapSuperAdmin: boolean;
+  }): Promise<ResolvedAuthContext> {
+    return withRlsTransaction(
+      'auth.resolveContext',
+      async (tx) => {
+        const user = await this.resolveOrProvisionUserTx(tx, input);
 
-        const studentCode = `STU-${new Date().getFullYear()}-${input.authUserId.slice(0, 6).toUpperCase()}`;
-        try {
-          const inserted = await tx
-            .insert(users)
-            .values({
-              authUserId: input.authUserId,
-              email: input.email.trim(),
-              normalizedEmail,
-              displayName: displayName || 'CampusVerse Student',
-              department: input.department?.trim() || 'Computer Science & Engineering',
-              yearOfStudy: input.yearOfStudy?.trim() || 'Undergraduate',
-              studentId: studentCode,
-              globalRole: input.isBootstrapSuperAdmin ? 'super_admin' : 'user',
-              accountStatus: 'active',
-              emailVerifiedAt: new Date(),
+        const [membershipRows, followRows] = await Promise.all([
+          tx
+            .select({
+              membership: clubMemberships,
+              clubName: clubs.name,
             })
-            .returning();
+            .from(clubMemberships)
+            .innerJoin(clubs, eq(clubMemberships.clubId, clubs.id))
+            .where(and(eq(clubMemberships.userId, user.id), eq(clubMemberships.status, 'active'))),
+          tx
+            .select({clubId: clubFollows.clubId})
+            .from(clubFollows)
+            .where(eq(clubFollows.userId, user.id)),
+        ]);
 
-          return mapUserRow(inserted[0]);
-        } catch (err: unknown) {
-          if (isPgUniqueViolation(err)) {
-            const raced = await tx
-              .select()
-              .from(users)
-              .where(
-                or(
-                  eq(users.authUserId, input.authUserId),
-                  eq(users.normalizedEmail, normalizedEmail),
-                ),
-              )
-              .limit(1);
-            if (raced[0]) return mapUserRow(raced[0]);
-          }
-          throw err;
-        }
+        return {
+          user,
+          memberships: membershipRows.map((r) =>
+            mapMembershipRow(r.membership, {
+              clubName: r.clubName,
+              userName: user.name,
+              userEmail: user.email,
+            }),
+          ),
+          followedClubIds: followRows.map((f) => f.clubId),
+        };
       },
       {globalRole: 'auth_resolver'},
     );

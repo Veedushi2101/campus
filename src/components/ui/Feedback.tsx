@@ -69,7 +69,11 @@ export const StatusLabel: React.FC<{
   status: string;
 }> = ({status}) => {
   const normalized = status.toLowerCase();
-  if (['active', 'published', 'confirmed', 'attended', 'completed'].includes(normalized)) {
+  if (
+    ['active', 'published', 'registration_open', 'confirmed', 'attended', 'completed', 'accepted'].includes(
+      normalized,
+    )
+  ) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 capitalize whitespace-nowrap">
         <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
@@ -77,7 +81,11 @@ export const StatusLabel: React.FC<{
       </span>
     );
   }
-  if (['pending_review', 'pending_verification', 'draft', 'waitlisted', 'partial'].includes(normalized)) {
+  if (
+    ['pending_review', 'pending_verification', 'pending', 'draft', 'waitlisted', 'partial'].includes(
+      normalized,
+    )
+  ) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 capitalize whitespace-nowrap">
         <Clock className="h-3.5 w-3.5 shrink-0" />
@@ -85,7 +93,7 @@ export const StatusLabel: React.FC<{
       </span>
     );
   }
-  if (['suspended', 'cancelled'].includes(normalized)) {
+  if (['suspended', 'cancelled', 'revoked', 'expired'].includes(normalized)) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-red-700 capitalize whitespace-nowrap">
         <XCircle className="h-3.5 w-3.5 shrink-0" />
@@ -93,11 +101,11 @@ export const StatusLabel: React.FC<{
       </span>
     );
   }
-  if (normalized === 'inactive') {
+  if (['inactive', 'registration_closed'].includes(normalized)) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 capitalize whitespace-nowrap">
         <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-        Inactive
+        {status.replace(/_/g, ' ')}
       </span>
     );
   }

@@ -43,7 +43,12 @@ export const env = {
   isDatabaseConfigured: Boolean(effectiveRuntimeDbUrl),
   supabaseUrl,
   supabasePublishableKey,
+  supabaseServiceRoleKey: (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim(),
   supabaseJwtSecret: (process.env.SUPABASE_JWT_SECRET || '').trim(),
+  smtpUrl: (process.env.SMTP_URL || '').trim(),
+  smtpFrom: (process.env.SMTP_FROM || 'no-reply@campusverse.edu').trim(),
+  invitationTtlHours: Math.max(1, Number(process.env.INVITATION_TTL_HOURS || 72) || 72),
+  maxCsvExportRows: Math.max(100, Number(process.env.MAX_CSV_EXPORT_ROWS || 5000) || 5000),
   institutionalEmailDomains,
   superAdminBootstrapEmails,
   // Demo mode is strictly isolated: never active in production and never active when a PostgreSQL DB URL is configured

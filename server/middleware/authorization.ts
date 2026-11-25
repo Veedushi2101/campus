@@ -1,5 +1,8 @@
 import type {NextFunction, Request, Response} from 'express';
-import type {CoreMemberPermission} from '../../shared/constants/permissions.ts';
+import {
+  isClubOfficerRole,
+  type CoreMemberPermission,
+} from '../../shared/constants/permissions.ts';
 import type {DataAdapter} from '../adapters/DataAdapter.ts';
 import {ForbiddenError, NotFoundError, UnauthorizedError} from '../shared/errors/AppError.ts';
 
@@ -30,7 +33,7 @@ export function hasClubPermission(
 
   const membership = req.auth.memberships.find((m) => m.clubId === clubId);
   if (!membership) return false;
-  if (membership.role === 'club_admin') return true;
+  if (isClubOfficerRole(membership.role)) return true;
   if (!requiredPermission) return true;
   return membership.permissions.includes(requiredPermission);
 }
@@ -47,8 +50,29 @@ export function requireClubAdmin(clubIdParam = 'clubId') {
     if (req.auth.user.isSuperAdmin) return next();
 
     const membership = req.auth.memberships.find((m) => m.clubId === clubId);
-    if (!membership || membership.role !== 'club_admin') {
-      return next(new ForbiddenError('Club Admin privileges for this club are required'));
+    if (!membership || !isClubOfficerRole(membership.role)) {
+      return next(
+        new ForbiddenError('Club President or Vice President privileges for this club are required'),
+      );
+    }
+    next();
+  };
+}
+
+export function requireClubPresident(clubIdParam = 'clubId') {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    if (!req.auth?.user) {
+      return next(new UnauthorizedError('Sign in is required'));
+    }
+    const clubId = req.params[clubIdParam];
+    if (!clubId) {
+      return next(new ForbiddenError('Missing club context'));
+    }
+    if (req.auth.user.isSuperAdmin) return next();
+
+    const membership = req.auth.memberships.find((m) => m.clubId === clubId);
+    if (!membership || membership.role !== 'president') {
+      return next(new ForbiddenError('Club President or Super Admin privileges are required'));
     }
     next();
   };
@@ -86,10 +110,11 @@ export function requireEventPermission(
         return next(new UnauthorizedError('Sign in is required'));
       }
       const eventId = req.params[eventIdParam];
-      const event = await adapter.getEventById(eventId);
+      const event = req.resolvedEvent || (await adapter.getEventById(eventId));
       if (!event) {
         return next(new NotFoundError('Event not found'));
       }
+      req.resolvedEvent = event;
       if (!hasClubPermission(req, event.clubId, requiredPermission)) {
         return next(
           new ForbiddenError(

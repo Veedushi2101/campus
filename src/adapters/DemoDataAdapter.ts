@@ -2,14 +2,18 @@ import {DemoDataAdapter as ServerDemoAdapter} from '../../server/adapters/DemoDa
 import {signSessionToken} from '../../server/shared/utils/crypto.ts';
 import type {
   Club,
+  ClubRole,
   ClubStatus,
   CoreMemberPermission,
+  EventEligibilityRules,
   EventItem,
+  EventStatus,
   FinancialLineItem,
+  FormAnswerValue,
   FormField,
   SystemSettings,
 } from '../../shared/types/domain.ts';
-import type {ClientDataAdapter} from './DataAdapter.ts';
+import type {ClientDataAdapter, EventLifecycleAction} from './DataAdapter.ts';
 
 /**
  * Isolated client-side DemoDataAdapter used for offline unit tests or decoupled
@@ -92,8 +96,20 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     return (await this.store.updateUserProfile(this.currentUserId, input))!;
   }
 
-  listClubs(params?: {search?: string; category?: string}) {
-    return this.store.listClubs(params);
+  listClubs(params?: {search?: string; category?: string; sortBy?: string}) {
+    return this.store.listClubs(params as Parameters<ServerDemoAdapter['listClubs']>[0]);
+  }
+
+  listClubsPaginated(params?: {
+    search?: string;
+    category?: string;
+    sortBy?: string;
+    page?: number;
+    pageSize?: number;
+  }) {
+    return this.store.listClubsPaginated(
+      params as Parameters<ServerDemoAdapter['listClubsPaginated']>[0],
+    );
   }
 
   async getClubDetail(clubId: string) {
@@ -106,11 +122,13 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
 
   createClub(input: {
     name: string;
+    slug?: string;
     category: Club['category'];
     tagline: string;
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    foundedYear?: number;
     status?: ClubStatus;
   }) {
     return this.store.createClub({...input, createdByUserId: this.currentUserId});
@@ -149,7 +167,7 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     input: {
       email?: string;
       userId?: string;
-      role: 'club_admin' | 'core_member';
+      role: ClubRole;
       title: string;
       permissions: CoreMemberPermission[];
     },
@@ -175,7 +193,7 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     clubId: string,
     membershipId: string,
     updates: {
-      role?: 'club_admin' | 'core_member';
+      role?: ClubRole;
       title?: string;
       permissions?: CoreMemberPermission[];
     },
@@ -187,12 +205,99 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     await this.store.removeClubMembership(clubId, membershipId);
   }
 
+  assignClubLeadership(
+    clubId: string,
+    input: {
+      email: string;
+      role: 'president' | 'vice_president';
+      title?: string;
+      replaceExisting?: boolean;
+      sendInvitation?: boolean;
+    },
+  ) {
+    return this.store.assignClubLeadership({
+      clubId,
+      ...input,
+      actorUserId: this.currentUserId,
+    });
+  }
+
+  listClubInvitations(clubId: string) {
+    return this.store.listClubInvitations(clubId);
+  }
+
+  createClubInvitation(
+    clubId: string,
+    input: {
+      email: string;
+      role: ClubRole;
+      title?: string;
+      permissions: CoreMemberPermission[];
+      replaceExisting?: boolean;
+    },
+  ) {
+    return this.store.createClubInvitation({
+      clubId,
+      ...input,
+      inviterUserId: this.currentUserId,
+    });
+  }
+
+  resendClubInvitation(clubId: string, invitationId: string) {
+    return this.store.resendClubInvitation(clubId, invitationId, this.currentUserId);
+  }
+
+  async revokeClubInvitation(clubId: string, invitationId: string) {
+    return (await this.store.revokeClubInvitation(clubId, invitationId))!;
+  }
+
+  previewInvitation(token: string) {
+    return this.store.previewInvitation(token);
+  }
+
+  async acceptInvitation(input: {
+    token: string;
+    name?: string;
+    department?: string;
+    yearOfStudy?: string;
+  }) {
+    const user = (await this.store.getUserById(this.currentUserId))!;
+    return this.store.acceptInvitation({
+      token: input.token,
+      authUserId: user.id,
+      email: user.email,
+      name: input.name || user.name,
+      department: input.department || user.department,
+      yearOfStudy: input.yearOfStudy || user.yearOfStudy,
+      emailVerified: true,
+      isBootstrapSuperAdmin: user.isSuperAdmin,
+    });
+  }
+
   getHallOfFame() {
     return this.store.getHallOfFame();
   }
 
-  listEvents(params?: {search?: string; category?: string; clubId?: string; status?: string; upcomingOnly?: boolean}) {
+  listEvents(params?: {
+    search?: string;
+    category?: string;
+    clubId?: string;
+    status?: string;
+    upcomingOnly?: boolean;
+  }) {
     return this.store.listEvents(params);
+  }
+
+  listEventsPaginated(params?: {
+    search?: string;
+    category?: string;
+    clubId?: string;
+    status?: string;
+    upcomingOnly?: boolean;
+    page?: number;
+    pageSize?: number;
+  }) {
+    return this.store.listEventsPaginated(params);
   }
 
   async getEventDetail(eventId: string) {
@@ -208,10 +313,12 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
       venue: string;
       startTime: string;
       endTime: string;
+      registrationOpensAt?: string | null;
       registrationDeadline: string;
       capacity: number;
       isPaid: boolean;
       feeAmount: number;
+      eligibilityRules?: EventEligibilityRules;
     },
   ) {
     return this.store.createEvent(clubId, input);
@@ -225,15 +332,42 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     return (await this.store.publishEvent(eventId))!;
   }
 
-  getEventForm(eventId: string) {
+  async transitionEventLifecycle(eventId: string, action: EventLifecycleAction) {
+    const map: Record<EventLifecycleAction, EventStatus> = {
+      publish: 'published',
+      unpublish: 'draft',
+      'open-registration': 'registration_open',
+      'close-registration': 'registration_closed',
+      cancel: 'cancelled',
+      complete: 'completed',
+    };
+    return (await this.store.updateEventLifecycle(eventId, map[action]))!;
+  }
+
+  getEventForm(eventId: string, _version?: number) {
     return this.store.getRegistrationForm(eventId);
   }
 
-  saveEventForm(eventId: string, fields: FormField[]) {
-    return this.store.upsertRegistrationForm(eventId, fields);
+  saveEventForm(
+    eventId: string,
+    fields: FormField[],
+    meta?: {title?: string; description?: string},
+  ) {
+    return this.store.upsertRegistrationForm(eventId, fields, {
+      ...meta,
+      updatedBy: this.currentUserId,
+    });
   }
 
-  async submitRegistration(eventId: string, answers: Record<string, string | boolean | number>) {
+  publishEventForm(eventId: string) {
+    return this.store.publishRegistrationForm(eventId, this.currentUserId);
+  }
+
+  async getPublishedFormVersion(eventId: string, version?: number) {
+    return (await this.store.getPublishedFormVersion(eventId, version))!;
+  }
+
+  async submitRegistration(eventId: string, answers: Record<string, FormAnswerValue>) {
     const user = (await this.store.getUserById(this.currentUserId))!;
     return this.store.createRegistration({
       eventId,
@@ -245,8 +379,19 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     });
   }
 
+  cancelMyRegistration(eventId: string) {
+    return this.store.cancelRegistration(eventId, this.currentUserId);
+  }
+
   listEventRegistrations(eventId: string) {
     return this.store.listRegistrationsForEvent(eventId);
+  }
+
+  listEventRegistrationsPaginated(
+    eventId: string,
+    params?: {page?: number; pageSize?: number; search?: string; status?: string},
+  ) {
+    return this.store.listRegistrationsForEventPaginated(eventId, params);
   }
 
   listMyRegistrations() {
@@ -255,7 +400,12 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
 
   async scanAttendance(
     eventId: string,
-    input: {qrToken?: string; registrationId?: string; method: 'qr_scan' | 'manual_override'},
+    input: {
+      qrToken?: string;
+      registrationId?: string;
+      method: 'qr_scan' | 'manual_override';
+      reason?: string;
+    },
   ) {
     const reg = input.qrToken
       ? await this.store.getRegistrationByQrToken(eventId, input.qrToken)
@@ -271,17 +421,30 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
       studentCode: reg.studentId,
       qrToken: reg.qrToken,
       method: input.method,
+      manualReason: input.reason,
       checkedInBy: this.currentUserId,
     });
   }
 
-  async getEventAttendance(eventId: string) {
-    const records = await this.store.listAttendanceForEvent(eventId);
+  manualAttendance(eventId: string, input: {registrationId: string; reason: string}) {
+    return this.scanAttendance(eventId, {
+      registrationId: input.registrationId,
+      method: 'manual_override',
+      reason: input.reason,
+    });
+  }
+
+  async getEventAttendance(
+    eventId: string,
+    params?: {page?: number; pageSize?: number; search?: string},
+  ) {
+    const res = await this.store.listAttendanceForEventPaginated(eventId, params);
     const ev = await this.store.getEventById(eventId);
     return {
-      records,
+      records: res.items,
       registeredCount: ev?.registeredCount || 0,
-      attendedCount: records.length,
+      attendedCount: res.pagination.total,
+      pagination: res.pagination,
     };
   }
 
@@ -313,7 +476,10 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     return this.store.getEventReport(eventId);
   }
 
-  async submitFinancialReport(eventId: string, input: {lineItems: FinancialLineItem[]; notes: string}) {
+  async submitFinancialReport(
+    eventId: string,
+    input: {lineItems: FinancialLineItem[]; notes: string},
+  ) {
     const ev = (await this.store.getEventById(eventId))!;
     const user = (await this.store.getUserById(this.currentUserId))!;
     const totalCollections = input.lineItems

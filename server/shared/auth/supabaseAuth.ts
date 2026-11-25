@@ -20,6 +20,7 @@ interface VerifiedSupabaseClaims {
 
 const JWKS_CACHE_TTL_MS = 15 * 60 * 1000;
 let cachedJwks: {keys: JwkEntry[]; fetchedAt: number} | null = null;
+const keyObjectCache = new Map<string, crypto.KeyObject>();
 
 function decodeBase64Url(segment: string): Buffer {
   const padded = segment.replace(/-/g, '+').replace(/_/g, '/');
@@ -43,7 +44,17 @@ async function fetchSupabaseJwks(forceRefresh = false): Promise<JwkEntry[]> {
   const body = (await res.json()) as {keys?: JwkEntry[]};
   const keys = Array.isArray(body.keys) ? body.keys : [];
   cachedJwks = {keys, fetchedAt: Date.now()};
+  keyObjectCache.clear();
   return keys;
+}
+
+function getOrCreatePublicKey(jwk: JwkEntry): crypto.KeyObject {
+  const cacheKey = jwk.kid || JSON.stringify(jwk);
+  const cached = keyObjectCache.get(cacheKey);
+  if (cached) return cached;
+  const parsed = crypto.createPublicKey({key: jwk, format: 'jwk'});
+  keyObjectCache.set(cacheKey, parsed);
+  return parsed;
 }
 
 function verifySignatureWithJwk(
@@ -52,7 +63,7 @@ function verifySignatureWithJwk(
   signature: Buffer,
   jwk: JwkEntry,
 ): boolean {
-  const publicKey = crypto.createPublicKey({key: jwk, format: 'jwk'});
+  const publicKey = getOrCreatePublicKey(jwk);
   if (alg === 'ES256') {
     return crypto.verify(
       'sha256',

@@ -7,7 +7,10 @@ import {afterEach, describe, expect, it, vi} from 'vitest';
 import {AuthProvider} from '../../src/context/AuthContext.tsx';
 import {ToastProvider} from '../../src/context/ToastContext.tsx';
 import {apiClient} from '../../src/adapters/ApiDataAdapter.ts';
+import {ClubRegistrationsPage} from '../../src/pages/club/ClubRegistrationsPage.tsx';
 import {ClubTeamPage} from '../../src/pages/club/ClubTeamPage.tsx';
+import {AttendancePage} from '../../src/pages/club/AttendancePage.tsx';
+import {AcceptInvitePage} from '../../src/pages/public/AcceptInvitePage.tsx';
 import {LandingPage} from '../../src/pages/public/LandingPage.tsx';
 import {LoginPage} from '../../src/pages/public/LoginPage.tsx';
 import {HallOfFamePage} from '../../src/pages/student/HallOfFamePage.tsx';
@@ -136,7 +139,7 @@ vi.mock('../../src/adapters/ApiDataAdapter.ts', async () => {
   };
 });
 
-function renderWithProviders(ui: React.ReactElement) {
+function renderWithProviders(ui: React.ReactElement, initialEntries: string[] = ['/']) {
   const queryClient = new QueryClient({
     defaultOptions: {queries: {retry: false}},
   });
@@ -144,7 +147,7 @@ function renderWithProviders(ui: React.ReactElement) {
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <AuthProvider>
-          <MemoryRouter>{ui}</MemoryRouter>
+          <MemoryRouter initialEntries={initialEntries}>{ui}</MemoryRouter>
         </AuthProvider>
       </ToastProvider>
     </QueryClientProvider>,
@@ -178,8 +181,8 @@ describe('CampusVerse Frontend Components', () => {
   });
 
   it('hides demo personas when PostgreSQL & Supabase Auth mode is active', async () => {
-    const {apiClient} = await import('../../src/adapters/ApiDataAdapter.ts');
-    vi.mocked(apiClient.getAuthConfig).mockResolvedValueOnce({
+    const {apiClient: mockedClient} = await import('../../src/adapters/ApiDataAdapter.ts');
+    vi.mocked(mockedClient.getAuthConfig).mockResolvedValueOnce({
       mode: 'supabase',
       persistenceMode: 'postgres',
       demoModeEnabled: false,
@@ -201,7 +204,7 @@ describe('CampusVerse Frontend Components', () => {
   });
 });
 
-describe('CampusVerse Phase 3 Frontend Workflows', () => {
+describe('CampusVerse Phase 3 & Phase 4 Frontend Workflows', () => {
   afterEach(() => {
     cleanup();
   });
@@ -313,12 +316,55 @@ describe('CampusVerse Phase 3 Frontend Workflows', () => {
     }
   });
 
-  it('restricts Add Team Member role selector to Core Member for non-Super-Admin Club Admins', async () => {
+  it('renders ClubTeamPage with 4-scanner quota meter and Invite Team Member modal restricted for non-President', async () => {
     renderWithProviders(<ClubTeamPage />);
-    const addButton = await screen.findByRole('button', {name: /Add Team Member/i});
-    fireEvent.click(addButton);
-    expect(
-      await screen.findByText(/Only a Super Admin can assign Club Admins/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Core Member QR Scanner Quota/i)).toBeInTheDocument();
+    expect(screen.getByText(/0 \/ 4 slots used/i)).toBeInTheDocument();
+    const inviteButton = await screen.findByRole('button', {name: /Invite Team Member/i});
+    fireEvent.click(inviteButton);
+    expect(await screen.findByText(/Invite Club Team Member/i)).toBeInTheDocument();
+    expect(screen.getByText('Core Member (Scoped)')).toBeInTheDocument();
+  });
+
+  it('renders AcceptInvitePage with club leadership invitation preview from query token', async () => {
+    const previewSpy = vi.spyOn(apiClient, 'previewInvitation').mockResolvedValue({
+      clubName: 'Apex Robotics Lab',
+      clubSlug: 'apex-robotics-lab',
+      hasExistingAccount: false,
+      invitation: {
+        id: 'inv-1',
+        clubId: 'club-robotics',
+        clubName: 'Apex Robotics Lab',
+        inviteeEmail: 'ananya@vitbhopal.ac.in',
+        intendedRole: 'core_member',
+        title: 'Gate Scanner Lead',
+        permissions: ['SCAN_ATTENDANCE', 'VIEW_REGISTRATIONS'],
+        status: 'pending',
+        expiresAt: new Date(Date.now() + 86400_000).toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    });
+
+    try {
+      renderWithProviders(<AcceptInvitePage />, ['/accept-invite?token=CV-INV-TESTTOKEN1234567890']);
+      expect(await screen.findByText(/Join Apex Robotics Lab/i)).toBeInTheDocument();
+      expect(screen.getByText('ananya@vitbhopal.ac.in')).toBeInTheDocument();
+      expect(screen.getByText(/Gate Scanner Lead/i)).toBeInTheDocument();
+    } finally {
+      previewSpy.mockRestore();
+    }
+  });
+
+  it('renders ClubRegistrationsPage and AttendancePage Phase 4 export & gate controls', async () => {
+    renderWithProviders(<ClubRegistrationsPage />);
+    expect(await screen.findByText(/Participant Directory & Registrations/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: /Export CSV/i})).toBeInTheDocument();
+    cleanup();
+
+    renderWithProviders(<AttendancePage />);
+    expect(await screen.findByText(/Attendance & QR Check-In Gate/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: /Export Attendance CSV/i})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: /Verify & Check In/i})).toBeInTheDocument();
   });
 });

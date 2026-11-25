@@ -1,13 +1,25 @@
 import React, {useEffect, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
-import {AlertTriangle, CheckCircle2, QrCode, UserCheck} from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  QrCode,
+  Search,
+  UserCheck,
+} from 'lucide-react';
 import {useSearchParams} from 'react-router-dom';
+import type {Registration} from '../../../shared/types/domain.ts';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
+import {CameraQrScanner} from '../../components/qr/CameraQrScanner.tsx';
 import {Button} from '../../components/ui/Button.tsx';
 import {Card} from '../../components/ui/FormControls.tsx';
-import {LoadingSkeleton, StatusLabel} from '../../components/ui/Feedback.tsx';
+import {LoadingSkeleton, Modal, StatusLabel} from '../../components/ui/Feedback.tsx';
+import {PaginationBar} from '../../components/ui/PaginationBar.tsx';
 import {useAuth} from '../../context/AuthContext.tsx';
 import {useToast} from '../../context/ToastContext.tsx';
+import {useDebouncedValue} from '../../hooks/useDebouncedValue.ts';
+import {triggerBlobDownload} from '../../lib/download.ts';
 
 export const AttendancePage: React.FC = () => {
   const {activeClubId, hasPermission} = useAuth();
@@ -23,10 +35,17 @@ export const AttendancePage: React.FC = () => {
 
   const [selectedEventId, setSelectedEventId] = useState(searchParams.get('eventId') || '');
   const [qrInput, setQrInput] = useState('');
+  const [ledgerSearch, setLedgerSearch] = useState('');
+  const [ledgerPage, setLedgerPage] = useState(1);
+  const [exporting, setExporting] = useState(false);
+  const [manualTarget, setManualTarget] = useState<Registration | null>(null);
+  const [manualReason, setManualReason] = useState('');
   const [scanResult, setScanResult] = useState<{
     ok: boolean;
     message: string;
   } | null>(null);
+
+  const debouncedLedgerSearch = useDebouncedValue(ledgerSearch, 250);
 
   useEffect(() => {
     if (!selectedEventId && events.length > 0) {
@@ -34,33 +53,62 @@ export const AttendancePage: React.FC = () => {
     }
   }, [events, selectedEventId]);
 
+  useEffect(() => {
+    setLedgerPage(1);
+  }, [selectedEventId, debouncedLedgerSearch]);
+
   const {data: attendanceSummary, isLoading} = useQuery({
-    queryKey: ['event-attendance', selectedEventId],
-    queryFn: () => apiClient.getEventAttendance(selectedEventId),
+    queryKey: ['event-attendance', selectedEventId, ledgerPage, debouncedLedgerSearch],
+    queryFn: () =>
+      apiClient.getEventAttendance(selectedEventId, {
+        page: ledgerPage,
+        pageSize: 25,
+        search: debouncedLedgerSearch,
+      }),
     enabled: Boolean(selectedEventId),
   });
 
   const canViewRegs = hasPermission('VIEW_REGISTRATIONS');
-  const {data: registrations = []} = useQuery({
-    queryKey: ['event-registrations', selectedEventId],
-    queryFn: () => apiClient.listEventRegistrations(selectedEventId),
+  const {data: registrationsPage} = useQuery({
+    queryKey: ['event-registrations-gate', selectedEventId],
+    queryFn: () =>
+      apiClient.listEventRegistrationsPaginated(selectedEventId, {
+        page: 1,
+        pageSize: 25,
+      }),
     enabled: Boolean(selectedEventId) && canViewRegs,
   });
+
+  const registrations = registrationsPage?.items || [];
 
   const scanMutation = useMutation({
     mutationFn: (payload: {
       qrToken?: string;
       registrationId?: string;
       method: 'qr_scan' | 'manual_override';
-    }) => apiClient.scanAttendance(selectedEventId, payload),
+      reason?: string;
+    }) =>
+      payload.method === 'manual_override' && payload.registrationId && payload.reason
+        ? apiClient.manualAttendance(selectedEventId, {
+            registrationId: payload.registrationId,
+            reason: payload.reason,
+          })
+        : apiClient.scanAttendance(selectedEventId, payload),
     onSuccess: async (record) => {
       setScanResult({
         ok: true,
-        message: `Checked in ${record.studentName} (${record.qrToken}) via ${record.method}.`,
+        message: `Checked in ${record.studentName} (${record.qrToken}) via ${
+          record.method === 'qr_scan' ? 'QR scan' : 'manual override'
+        }.`,
       });
       setQrInput('');
-      await queryClient.invalidateQueries({queryKey: ['event-attendance', selectedEventId]});
-      await queryClient.invalidateQueries({queryKey: ['event-registrations', selectedEventId]});
+      setManualTarget(null);
+      setManualReason('');
+      await Promise.all([
+        queryClient.invalidateQueries({queryKey: ['event-attendance', selectedEventId]}),
+        queryClient.invalidateQueries({queryKey: ['event-registrations-gate', selectedEventId]}),
+        queryClient.invalidateQueries({queryKey: ['event-registrations', selectedEventId]}),
+      ]);
       toast.success('Attendance recorded', `${record.studentName} verified`);
     },
     onError: (err) => {
@@ -76,21 +124,60 @@ export const AttendancePage: React.FC = () => {
     scanMutation.mutate({qrToken: qrInput.trim(), method: 'qr_scan'});
   };
 
+  const handleManualSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualTarget || manualReason.trim().length < 5) return;
+    scanMutation.mutate({
+      registrationId: manualTarget.id,
+      method: 'manual_override',
+      reason: manualReason.trim(),
+    });
+  };
+
+  const handleExportCsv = async () => {
+    if (!selectedEventId) return;
+    setExporting(true);
+    try {
+      const {blob, filename} = await apiClient.downloadEventCsv(selectedEventId, 'attendance');
+      triggerBlobDownload(blob, filename);
+      toast.success('Attendance CSV exported', filename);
+    } catch (err) {
+      toast.error(
+        'Export failed',
+        err instanceof Error ? err.message : 'Unable to export attendance CSV',
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const registeredCount = attendanceSummary?.registeredCount || 0;
   const attendedCount = attendanceSummary?.attendedCount || 0;
   const attendancePct =
-    registeredCount > 0 ? Math.round((attendedCount / registeredCount) * 100) : 0;
+    registeredCount > 0 ? Math.min(100, Math.round((attendedCount / registeredCount) * 100)) : 0;
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-display text-2xl font-bold text-slate-900">
-          Attendance &amp; QR Check-In Gate
-        </h1>
-        <p className="mt-1 text-sm text-slate-600">
-          Verify opaque single-use QR passes or run manual fallback check-ins. Duplicate scans are
-          automatically blocked.
-        </p>
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+        <div>
+          <h1 className="font-display text-2xl font-bold text-slate-900">
+            Attendance &amp; QR Check-In Gate
+          </h1>
+          <p className="mt-1 text-sm text-slate-600">
+            Scan live QR passes via camera, enter opaque tokens manually, or record audited manual
+            overrides.
+          </p>
+        </div>
+
+        <Button
+          variant="outline"
+          loading={exporting}
+          disabled={!selectedEventId}
+          onClick={() => void handleExportCsv()}
+        >
+          <Download className="h-4 w-4" />
+          Export Attendance CSV
+        </Button>
       </div>
 
       <Card className="p-4">
@@ -115,21 +202,23 @@ export const AttendancePage: React.FC = () => {
       </Card>
 
       <div className="grid gap-6 lg:grid-cols-12">
-        {/* QR Scanner Simulation Card */}
-        <Card className="p-6 lg:col-span-5">
+        <Card className="space-y-4 p-6 lg:col-span-5">
           <div className="flex items-center gap-2.5 text-violet-700">
             <QrCode className="h-5 w-5" />
             <h2 className="font-display text-base font-semibold text-slate-900">
               QR Pass Verification
             </h2>
           </div>
-          <p className="mt-1.5 text-xs text-slate-600 leading-relaxed">
-            Scan or paste a student&apos;s opaque token (e.g.{' '}
-            <span className="font-mono text-slate-800">CV-QR-8F92A1C4</span>) to verify and mark
-            single-use attendance.
-          </p>
 
-          <form onSubmit={handleTokenSubmit} className="mt-4 space-y-3">
+          <CameraQrScanner
+            disabled={!selectedEventId || scanMutation.isPending}
+            onScanToken={(token) => scanMutation.mutate({qrToken: token, method: 'qr_scan'})}
+          />
+
+          <form onSubmit={handleTokenSubmit} className="space-y-3">
+            <label className="block text-xs font-medium text-slate-700">
+              Manual Token Entry
+            </label>
             <input
               type="text"
               value={qrInput}
@@ -138,7 +227,12 @@ export const AttendancePage: React.FC = () => {
               aria-label="QR Verification Token"
               className="block w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 font-mono text-sm uppercase text-slate-900 focus:border-blue-600"
             />
-            <Button type="submit" loading={scanMutation.isPending} className="w-full">
+            <Button
+              type="submit"
+              disabled={!selectedEventId}
+              loading={scanMutation.isPending}
+              className="w-full"
+            >
               Verify &amp; Check In
             </Button>
           </form>
@@ -146,7 +240,7 @@ export const AttendancePage: React.FC = () => {
           {scanResult && (
             <div
               role="status"
-              className={`mt-4 flex items-start gap-2.5 rounded-lg border p-3.5 text-xs ${
+              className={`flex items-start gap-2.5 rounded-lg border p-3.5 text-xs ${
                 scanResult.ok
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
                   : 'border-red-200 bg-red-50 text-red-900'
@@ -161,8 +255,7 @@ export const AttendancePage: React.FC = () => {
             </div>
           )}
 
-          {/* Attendance Summary Bar */}
-          <div className="mt-6 border-t border-slate-100 pt-5">
+          <div className="border-t border-slate-100 pt-5">
             <div className="flex items-baseline justify-between">
               <span className="text-xs font-medium text-slate-500">Gate Turnout</span>
               <span className="font-mono text-sm font-semibold text-slate-900 tabular-nums">
@@ -178,7 +271,6 @@ export const AttendancePage: React.FC = () => {
           </div>
         </Card>
 
-        {/* Quick-Test Registered Passes & Live Check-in Log */}
         <div className="space-y-6 lg:col-span-7">
           {canViewRegs && registrations.length > 0 && (
             <Card className="p-6">
@@ -186,89 +278,170 @@ export const AttendancePage: React.FC = () => {
                 Registered Participants (Quick Simulate &amp; Manual Fallback)
               </h2>
               <div className="mt-3 divide-y divide-slate-100">
-                {registrations.map((reg) => (
-                  <div key={reg.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-                    <div>
-                      <p className="text-sm font-medium text-slate-900">{reg.studentName}</p>
-                      <p className="font-mono text-xs text-slate-500">{reg.qrToken}</p>
+                {registrations.map((reg) => {
+                  const alreadyCheckedIn =
+                    Boolean(reg.qrUsedAt) ||
+                    reg.attendanceStatus === 'present' ||
+                    reg.status === 'attended';
+                  const canCheckIn =
+                    !alreadyCheckedIn &&
+                    reg.status !== 'waitlisted' &&
+                    reg.status !== 'cancelled';
+
+                  return (
+                    <div
+                      key={reg.id}
+                      className="flex flex-wrap items-center justify-between gap-3 py-3"
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-slate-900">{reg.studentName}</p>
+                        <p className="font-mono text-xs text-slate-500">{reg.qrToken}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <StatusLabel status={alreadyCheckedIn ? 'attended' : reg.status} />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!canCheckIn || scanMutation.isPending}
+                          onClick={() =>
+                            scanMutation.mutate({qrToken: reg.qrToken, method: 'qr_scan'})
+                          }
+                        >
+                          <QrCode className="h-3.5 w-3.5" />
+                          Scan
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={!canCheckIn || scanMutation.isPending}
+                          onClick={() => {
+                            setManualTarget(reg);
+                            setManualReason('');
+                          }}
+                        >
+                          <UserCheck className="h-3.5 w-3.5" />
+                          Manual
+                        </Button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <StatusLabel status={reg.status} />
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={scanMutation.isPending}
-                        onClick={() =>
-                          scanMutation.mutate({qrToken: reg.qrToken, method: 'qr_scan'})
-                        }
-                      >
-                        <QrCode className="h-3.5 w-3.5" />
-                        Simulate Scan
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={scanMutation.isPending}
-                        onClick={() =>
-                          scanMutation.mutate({
-                            registrationId: reg.id,
-                            method: 'manual_override',
-                          })
-                        }
-                      >
-                        <UserCheck className="h-3.5 w-3.5" />
-                        Manual
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </Card>
           )}
 
           <Card className="overflow-hidden">
-            <div className="border-b border-slate-200 px-6 py-4">
+            <div className="flex flex-col justify-between gap-3 border-b border-slate-200 px-6 py-4 sm:flex-row sm:items-center">
               <h2 className="font-display text-base font-semibold text-slate-900">
                 Verified Check-In Ledger
               </h2>
+              <div className="relative w-full sm:w-64">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="search"
+                  value={ledgerSearch}
+                  onChange={(e) => setLedgerSearch(e.target.value)}
+                  placeholder="Search checked-in students..."
+                  aria-label="Search checked-in ledger"
+                  className="w-full rounded-lg border border-slate-200 bg-white py-1.5 pl-8 pr-3 text-xs text-slate-900"
+                />
+              </div>
             </div>
             {isLoading ? (
               <div className="p-6">
                 <LoadingSkeleton rows={2} />
               </div>
             ) : !attendanceSummary?.records.length ? (
-              <p className="p-6 text-sm text-slate-500">No attendees checked in yet for this event.</p>
+              <p className="p-6 text-sm text-slate-500">
+                No attendees checked in yet for this event.
+              </p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500">
-                    <tr>
-                      <th className="px-6 py-3">Student</th>
-                      <th className="px-6 py-3">QR Token</th>
-                      <th className="px-6 py-3">Method</th>
-                      <th className="px-6 py-3 text-right">Checked In</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {attendanceSummary.records.map((rec) => (
-                      <tr key={rec.id}>
-                        <td className="px-6 py-3 font-medium text-slate-900">{rec.studentName}</td>
-                        <td className="px-6 py-3 font-mono text-xs text-slate-600">{rec.qrToken}</td>
-                        <td className="px-6 py-3 text-xs text-slate-600">
-                          {rec.method === 'qr_scan' ? 'QR Scan' : 'Manual Override'}
-                        </td>
-                        <td className="px-6 py-3 text-right font-mono text-xs text-slate-500 tabular-nums">
-                          {new Date(rec.checkedInAt).toLocaleTimeString()}
-                        </td>
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500">
+                      <tr>
+                        <th className="px-6 py-3">Student</th>
+                        <th className="px-6 py-3">QR Token</th>
+                        <th className="px-6 py-3">Method &amp; Notes</th>
+                        <th className="px-6 py-3 text-right">Checked In</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {attendanceSummary.records.map((rec) => (
+                        <tr key={rec.id}>
+                          <td className="px-6 py-3 font-medium text-slate-900">
+                            {rec.studentName}
+                          </td>
+                          <td className="px-6 py-3 font-mono text-xs text-slate-600">
+                            {rec.qrToken}
+                          </td>
+                          <td className="px-6 py-3 text-xs text-slate-600">
+                            <div>
+                              {rec.method === 'qr_scan' ? 'QR Scan' : 'Manual Override'}
+                            </div>
+                            {rec.manualReason && (
+                              <div className="mt-0.5 text-slate-500">{rec.manualReason}</div>
+                            )}
+                          </td>
+                          <td className="px-6 py-3 text-right font-mono text-xs text-slate-500 tabular-nums">
+                            {new Date(rec.checkedInAt).toLocaleTimeString()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <PaginationBar
+                  pagination={attendanceSummary.pagination}
+                  onPageChange={setLedgerPage}
+                />
+              </>
             )}
           </Card>
         </div>
       </div>
+
+      <Modal
+        open={Boolean(manualTarget)}
+        onClose={() => setManualTarget(null)}
+        title="Manual Attendance Override"
+        subtitle={
+          manualTarget
+            ? `Record verified manual check-in for ${manualTarget.studentName}`
+            : undefined
+        }
+      >
+        <form onSubmit={handleManualSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <label htmlFor="manual-override-reason" className="block text-xs font-medium text-slate-700">
+              Audit Reason (minimum 5 characters) *
+            </label>
+            <textarea
+              id="manual-override-reason"
+              rows={3}
+              required
+              minLength={5}
+              value={manualReason}
+              onChange={(e) => setManualReason(e.target.value)}
+              placeholder="e.g., Student phone battery died; verified university ID card at venue gate"
+              className="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setManualTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={manualReason.trim().length < 5}
+              loading={scanMutation.isPending}
+            >
+              Confirm Manual Check-In
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 };

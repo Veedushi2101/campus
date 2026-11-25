@@ -1,27 +1,38 @@
 import React, {useState} from 'react';
 import {zodResolver} from '@hookform/resolvers/zod';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
-import {Building2, Edit3, Plus, Search, Trash2, Users} from 'lucide-react';
+import {
+  Building2,
+  Edit3,
+  MailPlus,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Trash2,
+  Users,
+  XCircle,
+} from 'lucide-react';
 import {useForm} from 'react-hook-form';
 import {useSearchParams} from 'react-router-dom';
 import {z} from 'zod';
 import {
   CLUB_CATEGORIES,
+  CLUB_ROLE_LABELS,
   CORE_MEMBER_PERMISSIONS,
   PERMISSION_LABELS,
   type CoreMemberPermission,
 } from '../../../shared/constants/permissions.ts';
 import {createClubSchema, updateClubSchema} from '../../../shared/schemas/validation.ts';
-import type {Club, ClubMembership, ClubStatus} from '../../../shared/types/domain.ts';
+import type {Club, ClubMembership, ClubRole, ClubStatus} from '../../../shared/types/domain.ts';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {Button} from '../../components/ui/Button.tsx';
-import {Card, Input, Select, Textarea} from '../../components/ui/FormControls.tsx';
 import {ClubLogo, LoadingSkeleton, Modal, StatusLabel} from '../../components/ui/Feedback.tsx';
+import {Card, Input, Select, Textarea} from '../../components/ui/FormControls.tsx';
 import {useAuth} from '../../context/AuthContext.tsx';
 import {useToast} from '../../context/ToastContext.tsx';
 
-type CreateClubValues = z.infer<typeof createClubSchema>;
-type EditClubValues = z.infer<typeof updateClubSchema>;
+type CreateClubValues = z.input<typeof createClubSchema>;
+type EditClubValues = z.input<typeof updateClubSchema>;
 
 export const AdminClubsPage: React.FC = () => {
   const {toast, confirm} = useToast();
@@ -36,9 +47,13 @@ export const AdminClubsPage: React.FC = () => {
   const [managingClub, setManagingClub] = useState<Club | null>(null);
 
   const [leaderEmail, setLeaderEmail] = useState('');
-  const [leaderRole, setLeaderRole] = useState<'club_admin' | 'core_member'>('club_admin');
+  const [leaderRole, setLeaderRole] = useState<'president' | 'vice_president'>('president');
   const [leaderTitle, setLeaderTitle] = useState('Club President');
-  const [leaderPerms, setLeaderPerms] = useState<CoreMemberPermission[]>([
+  const [replaceExisting, setReplaceExisting] = useState(true);
+
+  const [coreEmail, setCoreEmail] = useState('');
+  const [coreTitle, setCoreTitle] = useState('Core Coordinator');
+  const [corePerms, setCorePerms] = useState<CoreMemberPermission[]>([
     'MANAGE_EVENTS',
     'VIEW_REGISTRATIONS',
     'SCAN_ATTENDANCE',
@@ -56,6 +71,12 @@ export const AdminClubsPage: React.FC = () => {
     enabled: Boolean(managingClub?.id),
   });
 
+  const {data: clubInvitations = [], isLoading: invitationsLoading} = useQuery({
+    queryKey: ['club-invitations', managingClub?.id],
+    queryFn: () => apiClient.listClubInvitations(managingClub!.id),
+    enabled: Boolean(managingClub?.id),
+  });
+
   const {
     register,
     handleSubmit,
@@ -63,7 +84,7 @@ export const AdminClubsPage: React.FC = () => {
     formState: {errors, isSubmitting},
   } = useForm<CreateClubValues>({
     resolver: zodResolver(createClubSchema),
-    defaultValues: {category: 'Technology'},
+    defaultValues: {category: 'Technology', foundedYear: new Date().getFullYear()},
   });
 
   const {
@@ -75,6 +96,7 @@ export const AdminClubsPage: React.FC = () => {
     values: editingClub
       ? {
           name: editingClub.name,
+          slug: editingClub.slug,
           category: editingClub.category,
           tagline: editingClub.tagline,
           description: editingClub.description,
@@ -95,13 +117,20 @@ export const AdminClubsPage: React.FC = () => {
         ? [
             queryClient.invalidateQueries({queryKey: ['club', clubId]}),
             queryClient.invalidateQueries({queryKey: ['club-team', clubId]}),
+            queryClient.invalidateQueries({queryKey: ['club-invitations', clubId]}),
           ]
         : []),
     ]);
   };
 
   const createMutation = useMutation({
-    mutationFn: (vals: CreateClubValues) => apiClient.createClub(vals),
+    mutationFn: (vals: CreateClubValues) => {
+      const parsed = createClubSchema.parse(vals);
+      return apiClient.createClub({
+        ...parsed,
+        slug: parsed.slug || undefined,
+      });
+    },
     onSuccess: async (club) => {
       setCreateOpen(false);
       reset();
@@ -114,8 +143,10 @@ export const AdminClubsPage: React.FC = () => {
   });
 
   const editMutation = useMutation({
-    mutationFn: (vars: {clubId: string; values: EditClubValues}) =>
-      apiClient.updateClub(vars.clubId, vars.values),
+    mutationFn: (vars: {clubId: string; values: EditClubValues}) => {
+      const parsed = updateClubSchema.parse(vars.values);
+      return apiClient.updateClub(vars.clubId, parsed);
+    },
     onSuccess: async (updated) => {
       setEditingClub(null);
       await invalidateClubCaches(updated.id);
@@ -138,33 +169,67 @@ export const AdminClubsPage: React.FC = () => {
     },
   });
 
-  const assignMemberMutation = useMutation({
+  const assignLeadershipMutation = useMutation({
     mutationFn: () =>
-      apiClient.upsertClubMember(managingClub!.id, {
+      apiClient.assignClubLeadership(managingClub!.id, {
         email: leaderEmail.trim(),
         role: leaderRole,
-        title: leaderTitle.trim(),
-        permissions: leaderRole === 'club_admin' ? [...CORE_MEMBER_PERMISSIONS] : leaderPerms,
+        title: leaderTitle.trim() || CLUB_ROLE_LABELS[leaderRole],
+        replaceExisting,
+        sendInvitation: true,
       }),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setLeaderError(null);
       setLeaderEmail('');
       await Promise.all([refreshSession(), invalidateClubCaches(managingClub!.id)]);
-      toast.success('Leadership member assigned');
+      if (result.mode === 'assigned') {
+        toast.success(
+          `${CLUB_ROLE_LABELS[leaderRole]} assigned`,
+          result.replacedUserId
+            ? 'Previous officer role was deactivated while preserving their user account.'
+            : undefined,
+        );
+      } else {
+        toast.success(
+          `${CLUB_ROLE_LABELS[leaderRole]} invitation sent`,
+          'A tokenized onboarding link was dispatched to their institutional email.',
+        );
+      }
     },
     onError: (err) => {
-      const msg = err instanceof Error ? err.message : 'Unable to assign member';
+      const msg = err instanceof Error ? err.message : 'Unable to assign leadership';
       setLeaderError(msg);
-      toast.error('Assignment failed', msg);
+      toast.error('Leadership assignment failed', msg);
+    },
+  });
+
+  const assignCoreMutation = useMutation({
+    mutationFn: () =>
+      apiClient.createClubInvitation(managingClub!.id, {
+        email: coreEmail.trim(),
+        role: 'core_member',
+        title: coreTitle.trim() || 'Core Member',
+        permissions: corePerms,
+      }),
+    onSuccess: async () => {
+      setLeaderError(null);
+      setCoreEmail('');
+      await invalidateClubCaches(managingClub!.id);
+      toast.success('Core member invitation sent');
+    },
+    onError: (err) => {
+      const msg = err instanceof Error ? err.message : 'Unable to invite core member';
+      setLeaderError(msg);
+      toast.error('Invitation failed', msg);
     },
   });
 
   const updateMemberRoleMutation = useMutation({
-    mutationFn: (vars: {member: ClubMembership; nextRole: 'club_admin' | 'core_member'}) =>
+    mutationFn: (vars: {member: ClubMembership; nextRole: ClubRole}) =>
       apiClient.updateMemberPermissions(managingClub!.id, vars.member.id, {
         role: vars.nextRole,
         permissions:
-          vars.nextRole === 'club_admin' ? [...CORE_MEMBER_PERMISSIONS] : vars.member.permissions,
+          vars.nextRole === 'core_member' ? vars.member.permissions : [...CORE_MEMBER_PERMISSIONS],
       }),
     onSuccess: async () => {
       await Promise.all([refreshSession(), invalidateClubCaches(managingClub!.id)]);
@@ -184,6 +249,30 @@ export const AdminClubsPage: React.FC = () => {
     },
     onError: (err) => {
       toast.error('Failed to remove member', err instanceof Error ? err.message : undefined);
+    },
+  });
+
+  const resendInviteMutation = useMutation({
+    mutationFn: (invitationId: string) =>
+      apiClient.resendClubInvitation(managingClub!.id, invitationId),
+    onSuccess: async () => {
+      await invalidateClubCaches(managingClub!.id);
+      toast.success('Invitation resent');
+    },
+    onError: (err) => {
+      toast.error('Failed to resend', err instanceof Error ? err.message : undefined);
+    },
+  });
+
+  const revokeInviteMutation = useMutation({
+    mutationFn: (invitationId: string) =>
+      apiClient.revokeClubInvitation(managingClub!.id, invitationId),
+    onSuccess: async () => {
+      await invalidateClubCaches(managingClub!.id);
+      toast.info('Invitation revoked');
+    },
+    onError: (err) => {
+      toast.error('Failed to revoke', err instanceof Error ? err.message : undefined);
     },
   });
 
@@ -215,8 +304,15 @@ export const AdminClubsPage: React.FC = () => {
   const filtered = clubs.filter((c) => {
     if (!search.trim()) return true;
     const q = search.toLowerCase();
-    return c.name.toLowerCase().includes(q) || c.category.toLowerCase().includes(q);
+    return (
+      c.name.toLowerCase().includes(q) ||
+      c.slug.toLowerCase().includes(q) ||
+      c.category.toLowerCase().includes(q)
+    );
   });
+
+  const activePresident = managingTeam.find((m) => m.role === 'president');
+  const activeVp = managingTeam.find((m) => m.role === 'vice_president');
 
   return (
     <div className="space-y-6">
@@ -226,12 +322,13 @@ export const AdminClubsPage: React.FC = () => {
             Club Directory &amp; Charter Administration
           </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Register clubs, edit details, manage leadership assignments, and control active/inactive/suspended status.
+            Register clubs with unique slugs, assign Presidents &amp; Vice Presidents, and govern
+            active/inactive/suspended status.
           </p>
         </div>
 
         <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="h-4 w-4" />
+          <Building2 className="h-4 w-4" />
           Charter New Club
         </Button>
       </div>
@@ -242,7 +339,7 @@ export const AdminClubsPage: React.FC = () => {
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search clubs..."
+          placeholder="Search clubs by name, slug, or category..."
           className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-900"
         />
       </div>
@@ -276,7 +373,9 @@ export const AdminClubsPage: React.FC = () => {
                           >
                             {club.name}
                           </button>
-                          <p className="text-xs text-slate-500">{club.contactEmail}</p>
+                          <p className="text-xs text-slate-500">
+                            <span className="font-mono">{club.slug}</span> · {club.contactEmail}
+                          </p>
                         </div>
                       </div>
                     </td>
@@ -349,7 +448,11 @@ export const AdminClubsPage: React.FC = () => {
         open={Boolean(selectedClub)}
         onClose={() => setSelectedClub(null)}
         title={selectedClub?.name || 'Club Details'}
-        subtitle={selectedClub ? `${selectedClub.category} · Founded ${selectedClub.foundedYear}` : ''}
+        subtitle={
+          selectedClub
+            ? `${selectedClub.category} · /${selectedClub.slug} · Founded ${selectedClub.foundedYear}`
+            : ''
+        }
       >
         {selectedClub && (
           <div className="space-y-3 text-sm text-slate-600">
@@ -366,7 +469,7 @@ export const AdminClubsPage: React.FC = () => {
         open={Boolean(editingClub)}
         onClose={() => setEditingClub(null)}
         title={`Edit ${editingClub?.name || 'Club'}`}
-        subtitle="Update official club profile metadata and contact channels"
+        subtitle="Update official club charter metadata, unique slug, and contact email"
       >
         {editingClub && (
           <form
@@ -375,7 +478,15 @@ export const AdminClubsPage: React.FC = () => {
             )}
             className="space-y-4"
           >
-            <Input label="Club Name" error={editErrors.name?.message} {...registerEdit('name')} />
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Input label="Club Name" error={editErrors.name?.message} {...registerEdit('name')} />
+              <Input
+                label="Unique Slug"
+                error={editErrors.slug?.message}
+                hint="Lowercase letters, numbers, hyphens"
+                {...registerEdit('slug')}
+              />
+            </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <Select
                 label="Category"
@@ -422,88 +533,166 @@ export const AdminClubsPage: React.FC = () => {
         open={Boolean(managingClub)}
         onClose={() => setManagingClub(null)}
         title={`Club Leadership · ${managingClub?.name || ''}`}
-        subtitle="Assign Club Admins or Core Members and manage leadership transitions"
-        maxWidth="max-w-2xl"
+        subtitle="Assign 1 President, 1 Vice President, and invite Core Members"
+        maxWidth="max-w-3xl"
       >
         {managingClub && (
           <div className="space-y-6">
+            {leaderError && (
+              <div
+                role="alert"
+                className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800"
+              >
+                {leaderError}
+              </div>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 text-xs">
+                <p className="font-semibold text-slate-500">Current President (Max 1)</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">
+                  {activePresident ? activePresident.userName : 'Vacant'}
+                </p>
+                {activePresident && (
+                  <p className="text-slate-500">{activePresident.userEmail}</p>
+                )}
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 text-xs">
+                <p className="font-semibold text-slate-500">Current Vice President (Max 1)</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">
+                  {activeVp ? activeVp.userName : 'Vacant'}
+                </p>
+                {activeVp && <p className="text-slate-500">{activeVp.userEmail}</p>}
+              </div>
+            </div>
+
+            {/* President / VP Leadership Assignment */}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
                 setLeaderError(null);
-                assignMemberMutation.mutate();
+                assignLeadershipMutation.mutate();
               }}
-              className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4"
+              className="space-y-3 rounded-xl border border-violet-200 bg-violet-50/30 p-4"
             >
-              <p className="text-xs font-semibold text-slate-900">Assign Club Leader / Member</p>
-              {leaderError && (
-                <div
-                  role="alert"
-                  className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800"
-                >
-                  {leaderError}
-                </div>
-              )}
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4 text-violet-700" />
+                <p className="text-xs font-semibold text-slate-900">
+                  Assign or Replace President / Vice President
+                </p>
+              </div>
               <div className="grid gap-3 sm:grid-cols-3">
                 <Input
-                  label="User Email"
+                  label="Institutional Email"
                   type="email"
                   required
                   value={leaderEmail}
                   onChange={(e) => setLeaderEmail(e.target.value)}
-                  placeholder="leader@vitbhopal.ac.in"
+                  placeholder="president@vitbhopal.ac.in"
                 />
                 <Select
-                  label="Role"
+                  label="Executive Role"
                   value={leaderRole}
-                  onChange={(e) => setLeaderRole(e.target.value as 'club_admin' | 'core_member')}
+                  onChange={(e) => {
+                    const next = e.target.value as 'president' | 'vice_president';
+                    setLeaderRole(next);
+                    setLeaderTitle(next === 'president' ? 'Club President' : 'Vice President');
+                  }}
                   options={[
-                    {label: 'Club Admin', value: 'club_admin'},
-                    {label: 'Core Member', value: 'core_member'},
+                    {label: 'President (Max 1)', value: 'president'},
+                    {label: 'Vice President (Max 1)', value: 'vice_president'},
                   ]}
                 />
                 <Input
-                  label="Title"
+                  label="Official Title"
                   required
                   value={leaderTitle}
                   onChange={(e) => setLeaderTitle(e.target.value)}
                 />
               </div>
-
-              {leaderRole === 'core_member' && (
-                <div className="grid gap-2 sm:grid-cols-3">
-                  {CORE_MEMBER_PERMISSIONS.map((perm) => (
-                    <label
-                      key={perm}
-                      className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={leaderPerms.includes(perm)}
-                        onChange={() =>
-                          setLeaderPerms((prev) =>
-                            prev.includes(perm)
-                              ? prev.filter((p) => p !== perm)
-                              : [...prev, perm],
-                          )
-                        }
-                      />
-                      <span>{PERMISSION_LABELS[perm]}</span>
-                    </label>
-                  ))}
-                </div>
-              )}
-
-              <div className="flex justify-end">
-                <Button type="submit" size="sm" loading={assignMemberMutation.isPending}>
-                  Assign to {managingClub.name}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={replaceExisting}
+                    onChange={(e) => setReplaceExisting(e.target.checked)}
+                  />
+                  <span>
+                    Replace existing {CLUB_ROLE_LABELS[leaderRole]} if slot is occupied
+                  </span>
+                </label>
+                <Button type="submit" size="sm" loading={assignLeadershipMutation.isPending}>
+                  Assign {CLUB_ROLE_LABELS[leaderRole]}
                 </Button>
               </div>
             </form>
 
+            {/* Invite Core Member */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                setLeaderError(null);
+                assignCoreMutation.mutate();
+              }}
+              className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4"
+            >
+              <div className="flex items-center gap-2">
+                <MailPlus className="h-4 w-4 text-slate-700" />
+                <p className="text-xs font-semibold text-slate-900">
+                  Invite Core Member (Tokenized Email Onboarding)
+                </p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Input
+                  label="Institutional Email"
+                  type="email"
+                  required
+                  value={coreEmail}
+                  onChange={(e) => setCoreEmail(e.target.value)}
+                  placeholder="core.member@vitbhopal.ac.in"
+                />
+                <Input
+                  label="Core Title"
+                  required
+                  value={coreTitle}
+                  onChange={(e) => setCoreTitle(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {CORE_MEMBER_PERMISSIONS.map((perm) => (
+                  <label
+                    key={perm}
+                    className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={corePerms.includes(perm)}
+                      onChange={() =>
+                        setCorePerms((prev) =>
+                          prev.includes(perm) ? prev.filter((p) => p !== perm) : [...prev, perm],
+                        )
+                      }
+                    />
+                    <span>{PERMISSION_LABELS[perm]}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="outline"
+                  loading={assignCoreMutation.isPending}
+                >
+                  Send Core Member Invite
+                </Button>
+              </div>
+            </form>
+
+            {/* Active Roster */}
             <div>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Current Leadership Team ({managingTeam.length})
+                Active Leadership Team ({managingTeam.length})
               </h3>
               {teamLoading ? (
                 <LoadingSkeleton rows={2} />
@@ -520,28 +709,32 @@ export const AdminClubsPage: React.FC = () => {
                         <p className="text-sm font-semibold text-slate-900">{member.userName}</p>
                         <p className="text-xs text-slate-500">
                           {member.userEmail} · {member.title} ·{' '}
-                          <span className="font-medium text-violet-700 capitalize">
-                            {member.role.replace('_', ' ')}
+                          <span className="font-medium text-violet-700">
+                            {CLUB_ROLE_LABELS[member.role] || member.role}
                           </span>
                         </p>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          loading={updateMemberRoleMutation.isPending}
-                          onClick={() =>
-                            updateMemberRoleMutation.mutate({
-                              member,
-                              nextRole:
-                                member.role === 'club_admin' ? 'core_member' : 'club_admin',
-                            })
-                          }
-                        >
-                          {member.role === 'club_admin'
-                            ? 'Demote to Core'
-                            : 'Promote to Admin'}
-                        </Button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {member.role !== 'president' && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            loading={updateMemberRoleMutation.isPending}
+                            onClick={() =>
+                              updateMemberRoleMutation.mutate({
+                                member,
+                                nextRole:
+                                  member.role === 'vice_president'
+                                    ? 'core_member'
+                                    : 'vice_president',
+                              })
+                            }
+                          >
+                            {member.role === 'vice_president'
+                              ? 'Move to Core'
+                              : 'Promote to VP'}
+                          </Button>
+                        )}
                         <Button
                           size="sm"
                           variant="outline"
@@ -551,6 +744,60 @@ export const AdminClubsPage: React.FC = () => {
                           <Trash2 className="h-3.5 w-3.5 text-red-600" />
                           Remove
                         </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Invitation Ledger */}
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Invitations ({clubInvitations.length})
+              </h3>
+              {invitationsLoading ? (
+                <LoadingSkeleton rows={2} />
+              ) : clubInvitations.length === 0 ? (
+                <p className="mt-2 text-xs text-slate-500">No invitations sent for this club.</p>
+              ) : (
+                <div className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
+                  {clubInvitations.map((inv) => (
+                    <div
+                      key={inv.id}
+                      className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-xs"
+                    >
+                      <div>
+                        <p className="font-semibold text-slate-900">{inv.inviteeEmail}</p>
+                        <p className="text-slate-500">
+                          {CLUB_ROLE_LABELS[inv.intendedRole]} · {inv.title} · Expires{' '}
+                          {new Date(inv.expiresAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <StatusLabel status={inv.status} />
+                        {inv.status === 'pending' && (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              loading={resendInviteMutation.isPending}
+                              onClick={() => resendInviteMutation.mutate(inv.id)}
+                            >
+                              <RefreshCw className="h-3 w-3" />
+                              Resend
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              loading={revokeInviteMutation.isPending}
+                              onClick={() => revokeInviteMutation.mutate(inv.id)}
+                            >
+                              <XCircle className="h-3 w-3 text-red-600" />
+                              Revoke
+                            </Button>
+                          </>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -571,8 +818,16 @@ export const AdminClubsPage: React.FC = () => {
           onSubmit={handleSubmit((vals) => createMutation.mutate(vals))}
           className="space-y-4"
         >
-          <Input label="Club Name" error={errors.name?.message} {...register('name')} />
           <div className="grid gap-4 sm:grid-cols-2">
+            <Input label="Club Name" error={errors.name?.message} {...register('name')} />
+            <Input
+              label="Unique Slug (optional)"
+              placeholder="auto-generated-from-name"
+              error={errors.slug?.message}
+              {...register('slug')}
+            />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-3">
             <Select
               label="Category"
               error={errors.category?.message}
@@ -584,6 +839,12 @@ export const AdminClubsPage: React.FC = () => {
               type="email"
               error={errors.contactEmail?.message}
               {...register('contactEmail')}
+            />
+            <Input
+              label="Founded Year"
+              type="number"
+              error={errors.foundedYear?.message}
+              {...register('foundedYear')}
             />
           </div>
           <Input label="Tagline" error={errors.tagline?.message} {...register('tagline')} />

@@ -13,6 +13,23 @@ export class ClubsController {
         req.query.sortBy === 'name' || req.query.sortBy === 'events'
           ? req.query.sortBy
           : 'followers';
+      const page = req.query.page ? Number(req.query.page) : undefined;
+      const pageSize = req.query.pageSize ? Number(req.query.pageSize) : undefined;
+
+      if (page || pageSize) {
+        const result = await this.service.listClubsPaginated({
+          search,
+          category,
+          sortBy,
+          page: Number.isFinite(page) ? page : 1,
+          pageSize: Number.isFinite(pageSize) ? pageSize : 24,
+        });
+        sendSuccess(res, result.items, 200, {
+          pagination: result.pagination,
+        });
+        return;
+      }
+
       const clubs = await this.service.listClubs({search, category, sortBy});
       sendSuccess(res, clubs);
     } catch (error) {

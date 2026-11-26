@@ -62,6 +62,29 @@ export const Modal: React.FC<{
   );
 };
 
+export const SafeExternalLink: React.FC<{
+  href?: string | null;
+  className?: string;
+  children: React.ReactNode;
+}> = ({href, className = '', children}) => {
+  if (!href) return null;
+  let safeUrl: string | null = null;
+  try {
+    const parsed = new URL(href);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      safeUrl = parsed.toString();
+    }
+  } catch {
+    safeUrl = null;
+  }
+  if (!safeUrl) return null;
+  return (
+    <a href={safeUrl} target="_blank" rel="noopener noreferrer" className={className}>
+      {children}
+    </a>
+  );
+};
+
 /**
  * Semantic status indicator pairing explicit icon + text label (zero pill clutter, WCAG compliant).
  */
@@ -70,9 +93,17 @@ export const StatusLabel: React.FC<{
 }> = ({status}) => {
   const normalized = status.toLowerCase();
   if (
-    ['active', 'published', 'registration_open', 'confirmed', 'attended', 'completed', 'accepted'].includes(
-      normalized,
-    )
+    [
+      'active',
+      'published',
+      'registration_open',
+      'confirmed',
+      'attended',
+      'completed',
+      'accepted',
+      'released',
+      'approved',
+    ].includes(normalized)
   ) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 capitalize whitespace-nowrap">
@@ -82,9 +113,18 @@ export const StatusLabel: React.FC<{
     );
   }
   if (
-    ['pending_review', 'pending_verification', 'pending', 'draft', 'waitlisted', 'partial'].includes(
-      normalized,
-    )
+    [
+      'pending_review',
+      'pending_verification',
+      'pending',
+      'draft',
+      'waitlisted',
+      'partial',
+      'not_released',
+      'submitted',
+      'under_review',
+      'changes_requested',
+    ].includes(normalized)
   ) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 capitalize whitespace-nowrap">
@@ -93,7 +133,7 @@ export const StatusLabel: React.FC<{
       </span>
     );
   }
-  if (['suspended', 'cancelled', 'revoked', 'expired'].includes(normalized)) {
+  if (['suspended', 'cancelled', 'revoked', 'expired', 'rejected'].includes(normalized)) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-red-700 capitalize whitespace-nowrap">
         <XCircle className="h-3.5 w-3.5 shrink-0" />

@@ -1,6 +1,8 @@
 import type {
+  AdminAnalyticsResponse,
   AdminDashboardStats,
   AttendanceRecord,
+  AttendanceSummary,
   AuditLogEntry,
   Club,
   ClubDetail,
@@ -14,6 +16,9 @@ import type {
   EventItem,
   EventReport,
   EventStatus,
+  FinanceEntry,
+  FinanceEntryType,
+  FinanceSummaryResponse,
   FinancialReport,
   FormAnswerValue,
   FormField,
@@ -23,6 +28,8 @@ import type {
   Registration,
   RegistrationForm,
   SystemSettings,
+  TicketRecord,
+  TicketReleaseSummary,
   UserAccount,
 } from '../../shared/types/domain.ts';
 import {checkDatabaseHealth} from '../db/index.ts';
@@ -160,6 +167,7 @@ export class PostgresDataAdapter implements DataAdapter {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    instagramUrl?: string;
     foundedYear?: number;
     status?: ClubStatus;
     createdByUserId?: string;
@@ -415,6 +423,34 @@ export class PostgresDataAdapter implements DataAdapter {
     return this.opsRepo.getRegistrationByQrToken(eventId, qrToken);
   }
 
+  // Tickets
+  releaseEventTickets(
+    eventId: string,
+    actor: {id: string; name: string},
+  ): Promise<TicketReleaseSummary> {
+    return this.opsRepo.releaseEventTickets(eventId, actor);
+  }
+
+  listEventTickets(eventId: string): Promise<TicketRecord[]> {
+    return this.opsRepo.listEventTickets(eventId);
+  }
+
+  listStudentTickets(userId: string): Promise<TicketRecord[]> {
+    return this.opsRepo.listStudentTickets(userId);
+  }
+
+  getTicketById(ticketId: string): Promise<TicketRecord | null> {
+    return this.opsRepo.getTicketById(ticketId);
+  }
+
+  revokeTicket(
+    ticketId: string,
+    actor: {id: string; name: string},
+    reason?: string,
+  ): Promise<TicketRecord | null> {
+    return this.opsRepo.revokeTicket(ticketId, actor, reason);
+  }
+
   // Attendance
   recordAttendance(input: {
     eventId: string;
@@ -442,9 +478,26 @@ export class PostgresDataAdapter implements DataAdapter {
     return this.opsRepo.listAttendanceForEventPaginated(eventId, opts);
   }
 
+  getAttendanceSummary(eventId: string): Promise<AttendanceSummary> {
+    return this.opsRepo.getAttendanceSummary(eventId);
+  }
+
   // Reports & Finance
-  upsertEventReport(report: Omit<EventReport, 'id' | 'submittedAt'>): Promise<EventReport> {
+  upsertEventReport(
+    report: Omit<EventReport, 'id' | 'submittedAt'> & {actorRole?: string},
+  ): Promise<EventReport> {
     return this.opsRepo.upsertEventReport(report);
+  }
+
+  reviewEventReport(
+    reportId: string,
+    actor: {id: string; name: string},
+    input: {
+      status: 'under_review' | 'changes_requested' | 'approved' | 'rejected';
+      reviewNotes: string;
+    },
+  ): Promise<EventReport> {
+    return this.opsRepo.reviewEventReport(reportId, actor, input);
   }
 
   getEventReport(eventId: string): Promise<EventReport | null> {
@@ -469,6 +522,34 @@ export class PostgresDataAdapter implements DataAdapter {
     return this.opsRepo.listAllFinancialReports();
   }
 
+  createFinanceEntry(input: {
+    clubId: string;
+    eventId?: string | null;
+    entryType: FinanceEntryType;
+    sourceOrCategory: string;
+    description: string;
+    amountMinorUnits: number;
+    transactionDate: string;
+    vendorOrRecipient: string;
+    receiptUrl?: string;
+    notes?: string;
+    createdBy: string;
+    createdByName: string;
+  }): Promise<FinanceEntry> {
+    return this.opsRepo.createFinanceEntry(input);
+  }
+
+  deleteFinanceEntry(clubId: string, entryId: string): Promise<boolean> {
+    return this.opsRepo.deleteFinanceEntry(clubId, entryId);
+  }
+
+  getFinanceSummary(filters?: {
+    clubId?: string;
+    eventId?: string;
+  }): Promise<FinanceSummaryResponse> {
+    return this.opsRepo.getFinanceSummary(filters);
+  }
+
   // Notifications
   listNotificationsForUser(userId: string): Promise<NotificationItem[]> {
     return this.opsRepo.listNotificationsForUser(userId);
@@ -491,6 +572,10 @@ export class PostgresDataAdapter implements DataAdapter {
   // Admin & Audit
   getAdminDashboardStats(): Promise<AdminDashboardStats> {
     return this.opsRepo.getAdminDashboardStats();
+  }
+
+  getAdminAnalytics(): Promise<AdminAnalyticsResponse> {
+    return this.opsRepo.getAdminAnalytics();
   }
 
   listAuditLogs(): Promise<AuditLogEntry[]> {

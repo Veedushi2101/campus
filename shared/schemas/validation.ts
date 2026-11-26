@@ -60,6 +60,96 @@ export const registerDemoSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters'),
 });
 
+const instagramUrlInputSchema = z
+  .string()
+  .trim()
+  .max(200)
+  .transform((val, ctx): string => {
+    if (!val) return '';
+    let candidate = val;
+    if (candidate.startsWith('@')) {
+      candidate = `https://www.instagram.com/${candidate.slice(1)}/`;
+    } else if (!/^https?:\/\//i.test(candidate)) {
+      if (/^(www\.)?instagram\.com\//i.test(candidate)) {
+        candidate = `https://${candidate}`;
+      } else if (/^[a-zA-Z0-9._]{1,30}$/.test(candidate)) {
+        candidate = `https://www.instagram.com/${candidate}/`;
+      } else {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Enter a valid Instagram profile URL (https://www.instagram.com/handle/) or @handle',
+        });
+        return z.NEVER;
+      }
+    }
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Instagram URL must use http or https protocol',
+        });
+        return z.NEVER;
+      }
+      const host = parsed.hostname.toLowerCase();
+      if (host !== 'instagram.com' && host !== 'www.instagram.com') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Only official instagram.com profile URLs are allowed',
+        });
+        return z.NEVER;
+      }
+      const cleanPath = parsed.pathname.replace(/^\/+|\/+$/g, '');
+      const segments = cleanPath.split('/').filter(Boolean);
+      if (segments.length !== 1 || !/^[a-zA-Z0-9._]{1,30}$/.test(segments[0])) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Instagram URL must point to a valid club handle (e.g. https://www.instagram.com/clubhandle/)',
+        });
+        return z.NEVER;
+      }
+      return `https://www.instagram.com/${segments[0]}/`;
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Invalid Instagram profile URL format',
+      });
+      return z.NEVER;
+    }
+  });
+
+const safeOptionalHttpUrlSchema = z
+  .string()
+  .trim()
+  .max(500)
+  .transform((val, ctx): string => {
+    if (!val) return '';
+    if (!/^https?:\/\//i.test(val)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'URL must start with https:// or http://',
+      });
+      return z.NEVER;
+    }
+    try {
+      const parsed = new URL(val);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Only http:// and https:// URLs are permitted',
+        });
+        return z.NEVER;
+      }
+      return parsed.toString();
+    } catch {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Enter a valid URL',
+      });
+      return z.NEVER;
+    }
+  });
+
 export const createClubSchema = z.object({
   name: z.string().trim().min(3, 'Club name must be at least 3 characters').max(80),
   slug: z
@@ -75,6 +165,7 @@ export const createClubSchema = z.object({
   description: z.string().trim().min(20, 'Description must be at least 20 characters').max(1500),
   meetingSchedule: z.string().trim().min(4).max(120),
   contactEmail: z.string().trim().email('Valid contact email is required'),
+  instagramUrl: instagramUrlInputSchema.optional(),
   foundedYear: z.coerce.number().int().min(1950).max(2100).optional(),
   status: z.enum(['active', 'inactive', 'pending_review']).optional(),
 });
@@ -94,6 +185,7 @@ export const updateClubSchema = z
     description: z.string().trim().min(20, 'Description must be at least 20 characters').max(1500),
     meetingSchedule: z.string().trim().min(4).max(120),
     contactEmail: z.string().trim().email('Valid contact email is required'),
+    instagramUrl: instagramUrlInputSchema.optional(),
     logoUrl: z.string().trim().max(500).optional(),
   })
   .partial()
@@ -185,7 +277,19 @@ export const formFieldValidationRulesSchema = z
     maxLength: z.coerce.number().int().min(1).max(5000).optional(),
     min: z.coerce.number().optional(),
     max: z.coerce.number().optional(),
-    pattern: z.string().max(200).optional(),
+    pattern: z
+      .string()
+      .max(200)
+      .refine((pattern) => {
+        if (!pattern) return true;
+        try {
+          new RegExp(pattern);
+          return true;
+        } catch {
+          return false;
+        }
+      }, 'Validation regex pattern is invalid')
+      .optional(),
     patternMessage: z.string().max(160).optional(),
   })
   .optional();
@@ -237,12 +341,33 @@ export const manualAttendanceSchema = z.object({
   reason: z.string().trim().min(5, 'A reason of at least 5 characters is required').max(300),
 });
 
+export const releaseTicketsSchema = z.object({
+  confirmParticipantCount: z.coerce.number().int().min(0).optional(),
+  note: z.string().trim().max(300).optional(),
+});
+
+export const revokeTicketSchema = z.object({
+  reason: z.string().trim().min(3, 'Revocation reason is required').max(300).optional(),
+});
+
 export const submitEventReportSchema = z.object({
   outcomeSummary: z.string().trim().min(20, 'Outcome summary must be at least 20 characters').max(2000),
+  objectives: z.string().trim().max(1500).optional().default(''),
+  actualEventDate: z.string().trim().max(60).optional(),
+  participationSummary: z.string().trim().max(1500).optional().default(''),
+  outcomes: z.string().trim().max(1500).optional().default(''),
   highlights: z.string().trim().min(10, 'Highlights must be at least 10 characters').max(1500),
   challenges: z.string().trim().max(1500).default('None reported'),
+  feedbackObservations: z.string().trim().max(1500).optional().default(''),
+  evidenceUrl: safeOptionalHttpUrlSchema.optional().default(''),
   actualAttendance: z.coerce.number().int().min(0).max(10000),
   completionStatus: z.enum(['completed', 'partial']).default('completed'),
+  status: z.enum(['draft', 'submitted']).default('submitted'),
+});
+
+export const reviewEventReportSchema = z.object({
+  status: z.enum(['under_review', 'changes_requested', 'approved', 'rejected']),
+  reviewNotes: z.string().trim().max(1000).default(''),
 });
 
 export const financialLineItemSchema = z.object({
@@ -258,6 +383,25 @@ export const submitFinancialReportSchema = z.object({
   lineItems: z.array(financialLineItemSchema).min(1, 'At least one financial line item is required'),
   notes: z.string().trim().max(1000).default(''),
 });
+
+export const createFinanceEntrySchema = z
+  .object({
+    clubId: z.string().trim().min(1).optional(),
+    eventId: z.string().trim().min(1).nullable().optional(),
+    entryType: z.enum(['income', 'expense']),
+    sourceOrCategory: z.string().trim().min(2, 'Source or category is required').max(80),
+    description: z.string().trim().min(3, 'Description must be at least 3 characters').max(300),
+    amountMinorUnits: z.coerce.number().int().min(0).max(1000000000).optional(),
+    amount: z.coerce.number().min(0, 'Amount cannot be negative').max(10000000).optional(),
+    transactionDate: z.string().trim().min(4, 'Transaction date is required'),
+    vendorOrRecipient: z.string().trim().max(140).optional().default(''),
+    receiptUrl: safeOptionalHttpUrlSchema.optional().default(''),
+    notes: z.string().trim().max(500).optional().default(''),
+  })
+  .refine(
+    (data) => data.amountMinorUnits !== undefined || data.amount !== undefined,
+    {message: 'Either amount or amountMinorUnits must be provided'},
+  );
 
 export const updateUserStatusSchema = z.object({
   status: z.enum(['active', 'suspended']),

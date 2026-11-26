@@ -1,6 +1,8 @@
 import type {
+  AdminAnalyticsResponse,
   AdminDashboardStats,
   AttendanceRecord,
+  AttendanceSummary,
   AuditLogEntry,
   Club,
   ClubDetail,
@@ -14,6 +16,9 @@ import type {
   EventItem,
   EventReport,
   EventStatus,
+  FinanceEntry,
+  FinanceEntryType,
+  FinanceSummaryResponse,
   FinancialReport,
   FormAnswerValue,
   FormField,
@@ -23,6 +28,8 @@ import type {
   Registration,
   RegistrationForm,
   SystemSettings,
+  TicketRecord,
+  TicketReleaseSummary,
   UserAccount,
 } from '../../shared/types/domain.ts';
 
@@ -109,6 +116,7 @@ export interface DataAdapter {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    instagramUrl?: string;
     foundedYear?: number;
     status?: ClubStatus;
     createdByUserId?: string;
@@ -276,6 +284,20 @@ export interface DataAdapter {
   getRegistrationById(registrationId: string): Promise<Registration | null>;
   getRegistrationByQrToken(eventId: string, qrToken: string): Promise<Registration | null>;
 
+  // Tickets (Controlled Batch Release)
+  releaseEventTickets(
+    eventId: string,
+    actor: {id: string; name: string},
+  ): Promise<TicketReleaseSummary>;
+  listEventTickets(eventId: string): Promise<TicketRecord[]>;
+  listStudentTickets(userId: string): Promise<TicketRecord[]>;
+  getTicketById(ticketId: string): Promise<TicketRecord | null>;
+  revokeTicket(
+    ticketId: string,
+    actor: {id: string; name: string},
+    reason?: string,
+  ): Promise<TicketRecord | null>;
+
   // Attendance
   recordAttendance(input: {
     eventId: string;
@@ -294,10 +316,19 @@ export interface DataAdapter {
     eventId: string,
     opts?: {page?: number; pageSize?: number; search?: string},
   ): Promise<PaginatedResult<AttendanceRecord>>;
+  getAttendanceSummary(eventId: string): Promise<AttendanceSummary>;
 
   // Reports & Finance
   upsertEventReport(
-    report: Omit<EventReport, 'id' | 'submittedAt'>,
+    report: Omit<EventReport, 'id' | 'submittedAt'> & {actorRole?: string},
+  ): Promise<EventReport>;
+  reviewEventReport(
+    reportId: string,
+    actor: {id: string; name: string},
+    input: {
+      status: 'under_review' | 'changes_requested' | 'approved' | 'rejected';
+      reviewNotes: string;
+    },
   ): Promise<EventReport>;
   getEventReport(eventId: string): Promise<EventReport | null>;
   listAllEventReports(): Promise<EventReport[]>;
@@ -307,6 +338,25 @@ export interface DataAdapter {
   ): Promise<FinancialReport>;
   getFinancialReport(eventId: string): Promise<FinancialReport | null>;
   listAllFinancialReports(): Promise<FinancialReport[]>;
+  createFinanceEntry(input: {
+    clubId: string;
+    eventId?: string | null;
+    entryType: FinanceEntryType;
+    sourceOrCategory: string;
+    description: string;
+    amountMinorUnits: number;
+    transactionDate: string;
+    vendorOrRecipient: string;
+    receiptUrl?: string;
+    notes?: string;
+    createdBy: string;
+    createdByName: string;
+  }): Promise<FinanceEntry>;
+  deleteFinanceEntry(clubId: string, entryId: string): Promise<boolean>;
+  getFinanceSummary(filters?: {
+    clubId?: string;
+    eventId?: string;
+  }): Promise<FinanceSummaryResponse>;
 
   // Notifications
   listNotificationsForUser(userId: string): Promise<NotificationItem[]>;
@@ -316,6 +366,7 @@ export interface DataAdapter {
 
   // Admin & Audit
   getAdminDashboardStats(): Promise<AdminDashboardStats>;
+  getAdminAnalytics(): Promise<AdminAnalyticsResponse>;
   listAuditLogs(): Promise<AuditLogEntry[]>;
   appendAuditLog(entry: Omit<AuditLogEntry, 'id' | 'createdAt'>): Promise<AuditLogEntry>;
   getSystemSettings(): Promise<SystemSettings>;

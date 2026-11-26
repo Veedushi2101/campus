@@ -1,6 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
   Eye,
@@ -51,6 +52,7 @@ export const FormBuilderPage: React.FC = () => {
   const [formTitle, setFormTitle] = useState('');
   const [formDescription, setFormDescription] = useState('');
   const [mode, setMode] = useState<'builder' | 'preview'>('builder');
+  const [formActionError, setFormActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedEventId && events.length > 0) {
@@ -70,7 +72,8 @@ export const FormBuilderPage: React.FC = () => {
       setFormTitle(form.title || 'Event Registration Form');
       setFormDescription(form.description || '');
     }
-  }, [form]);
+    setFormActionError(null);
+  }, [form, selectedEventId]);
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -79,11 +82,14 @@ export const FormBuilderPage: React.FC = () => {
         description: formDescription.trim() || undefined,
       }),
     onSuccess: async (saved) => {
+      setFormActionError(null);
       await queryClient.invalidateQueries({queryKey: ['event-form', selectedEventId]});
       toast.success(`Draft saved (v${saved.version})`);
     },
     onError: (err) => {
-      toast.error('Failed to save form draft', err instanceof Error ? err.message : undefined);
+      const message = err instanceof Error ? err.message : 'Unable to save form draft';
+      setFormActionError(message);
+      toast.error('Failed to save form draft', message);
     },
   });
 
@@ -96,14 +102,20 @@ export const FormBuilderPage: React.FC = () => {
       return apiClient.publishEventForm(selectedEventId);
     },
     onSuccess: async (snapshot) => {
-      await queryClient.invalidateQueries({queryKey: ['event-form', selectedEventId]});
+      setFormActionError(null);
+      await Promise.all([
+        queryClient.invalidateQueries({queryKey: ['event-form', selectedEventId]}),
+        queryClient.invalidateQueries({queryKey: ['event-form', selectedEventId, 'published']}),
+      ]);
       toast.success(
         `Published immutable snapshot v${snapshot.version}`,
         'New student registrations will record answers against this locked version.',
       );
     },
     onError: (err) => {
-      toast.error('Failed to publish form', err instanceof Error ? err.message : undefined);
+      const message = err instanceof Error ? err.message : 'Unable to publish form';
+      setFormActionError(message);
+      toast.error('Failed to publish form', message);
     },
   });
 
@@ -141,17 +153,38 @@ export const FormBuilderPage: React.FC = () => {
 
   if (eventsLoading) return <LoadingSkeleton rows={3} />;
 
+  const publishedVersion = form?.publishedVersion ?? 0;
+  const publicationBadgeText =
+    form?.status === 'published' && publishedVersion > 0
+      ? `Published v${publishedVersion}`
+      : publishedVersion > 0
+        ? `Draft modified since Published v${publishedVersion}`
+        : 'Unpublished Draft';
+
   return (
     <div className="space-y-6 max-w-4xl">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div>
-          <h1 className="font-display text-2xl font-bold text-slate-900">
-            Registration Form Builder
-          </h1>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h1 className="font-display text-2xl font-bold text-slate-900">
+              Registration Form Builder
+            </h1>
+            {form && (
+              <span
+                className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${
+                  form.status === 'published'
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    : 'bg-amber-50 text-amber-800 border border-amber-200'
+                }`}
+              >
+                {publicationBadgeText}
+              </span>
+            )}
+          </div>
           <p className="mt-1 text-sm text-slate-600">
             Design 10-type intake schemas, save drafts, and publish immutable form snapshots (draft
             v{form?.version || 1}
-            {form?.publishedVersion ? ` · published v${form.publishedVersion}` : ''}).
+            {publishedVersion > 0 ? ` · live student snapshot v${publishedVersion}` : ' · not yet published to students'}).
           </p>
         </div>
 
@@ -202,6 +235,19 @@ export const FormBuilderPage: React.FC = () => {
           </Button>
         </div>
       </div>
+
+      {formActionError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-800"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-700" />
+          <div>
+            <p className="font-semibold">Form Update Error</p>
+            <p className="mt-0.5">{formActionError}</p>
+          </div>
+        </div>
+      )}
 
       <Card className="p-4 space-y-4">
         <div>
@@ -451,10 +497,13 @@ export const FormBuilderPage: React.FC = () => {
 
               {(field.type === 'text' ||
                 field.type === 'textarea' ||
+                field.type === 'email' ||
+                field.type === 'phone' ||
+                field.type === 'url' ||
                 field.type === 'number') && (
-                <div className="grid gap-3 border-t border-slate-100 pt-3 sm:grid-cols-2">
+                <div className="space-y-3 border-t border-slate-100 pt-3">
                   {field.type === 'number' ? (
-                    <>
+                    <div className="grid gap-3 sm:grid-cols-2">
                       <div>
                         <label className="block text-[11px] font-medium text-slate-600">
                           Min Value
@@ -491,46 +540,88 @@ export const FormBuilderPage: React.FC = () => {
                           className="mt-1 block w-full rounded-lg border border-slate-200 px-2.5 py-1 text-xs"
                         />
                       </div>
-                    </>
+                    </div>
                   ) : (
-                    <>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {(field.type === 'text' || field.type === 'textarea') && (
+                        <>
+                          <div>
+                            <label className="block text-[11px] font-medium text-slate-600">
+                              Min Length
+                            </label>
+                            <input
+                              type="number"
+                              value={field.validationRules?.minLength ?? ''}
+                              onChange={(e) =>
+                                updateField(idx, {
+                                  validationRules: {
+                                    ...field.validationRules,
+                                    minLength: e.target.value ? Number(e.target.value) : undefined,
+                                  },
+                                })
+                              }
+                              className="mt-1 block w-full rounded-lg border border-slate-200 px-2.5 py-1 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-medium text-slate-600">
+                              Max Length
+                            </label>
+                            <input
+                              type="number"
+                              value={field.validationRules?.maxLength ?? ''}
+                              onChange={(e) =>
+                                updateField(idx, {
+                                  validationRules: {
+                                    ...field.validationRules,
+                                    maxLength: e.target.value ? Number(e.target.value) : undefined,
+                                  },
+                                })
+                              }
+                              className="mt-1 block w-full rounded-lg border border-slate-200 px-2.5 py-1 text-xs"
+                            />
+                          </div>
+                        </>
+                      )}
                       <div>
                         <label className="block text-[11px] font-medium text-slate-600">
-                          Min Length
+                          Regex Pattern (optional)
                         </label>
                         <input
-                          type="number"
-                          value={field.validationRules?.minLength ?? ''}
+                          type="text"
+                          value={field.validationRules?.pattern ?? ''}
+                          placeholder="e.g. ^[A-Z0-9]{6,10}$"
                           onChange={(e) =>
                             updateField(idx, {
                               validationRules: {
                                 ...field.validationRules,
-                                minLength: e.target.value ? Number(e.target.value) : undefined,
+                                pattern: e.target.value || undefined,
+                              },
+                            })
+                          }
+                          className="mt-1 block w-full rounded-lg border border-slate-200 px-2.5 py-1 font-mono text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-600">
+                          Regex Error Message (optional)
+                        </label>
+                        <input
+                          type="text"
+                          value={field.validationRules?.patternMessage ?? ''}
+                          placeholder="e.g. Enter a valid 8-char student code"
+                          onChange={(e) =>
+                            updateField(idx, {
+                              validationRules: {
+                                ...field.validationRules,
+                                patternMessage: e.target.value || undefined,
                               },
                             })
                           }
                           className="mt-1 block w-full rounded-lg border border-slate-200 px-2.5 py-1 text-xs"
                         />
                       </div>
-                      <div>
-                        <label className="block text-[11px] font-medium text-slate-600">
-                          Max Length
-                        </label>
-                        <input
-                          type="number"
-                          value={field.validationRules?.maxLength ?? ''}
-                          onChange={(e) =>
-                            updateField(idx, {
-                              validationRules: {
-                                ...field.validationRules,
-                                maxLength: e.target.value ? Number(e.target.value) : undefined,
-                              },
-                            })
-                          }
-                          className="mt-1 block w-full rounded-lg border border-slate-200 px-2.5 py-1 text-xs"
-                        />
-                      </div>
-                    </>
+                    </div>
                   )}
                 </div>
               )}

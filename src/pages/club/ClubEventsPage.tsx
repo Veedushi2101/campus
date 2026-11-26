@@ -223,6 +223,7 @@ export const ClubEventsPage: React.FC = () => {
                     <div className="flex flex-wrap items-center gap-3">
                       <span className="text-xs font-medium text-violet-700">{ev.category}</span>
                       <StatusLabel status={ev.status} />
+                      <StatusLabel status={ev.ticketsReleasedAt ? 'released' : 'not_released'} />
                       {ev.eligibilityRules && (
                         <span className="text-[11px] font-medium text-slate-500">
                           Eligibility rules configured
@@ -356,6 +357,12 @@ export const ClubEventsPage: React.FC = () => {
                       className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                     >
                       Form
+                    </Link>
+                    <Link
+                      to={`${prefix}/registrations?eventId=${ev.id}`}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                    >
+                      Tickets
                     </Link>
                     <Link
                       to={`${prefix}/attendance?eventId=${ev.id}`}

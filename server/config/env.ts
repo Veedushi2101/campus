@@ -58,6 +58,12 @@ export const env = {
     !databaseUrl &&
     !databaseMigrationUrl,
   sessionSecret: process.env.SESSION_SECRET || runtimeFallbackSecret,
+  ticketEncryptionKey:
+    process.env.TICKET_ENCRYPTION_KEY?.trim() ||
+    crypto
+      .createHash('sha256')
+      .update(`campusverse-ticket-seal:${effectiveRuntimeDbUrl || supabaseUrl || 'dev-local'}`)
+      .digest('hex'),
   corsAllowedOrigins: (process.env.CORS_ALLOWED_ORIGINS || 'http://localhost:3000')
     .split(',')
     .map((origin) => origin.trim())

@@ -14,6 +14,15 @@ export class AdminController {
     }
   };
 
+  analytics = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const data = await this.service.getAnalytics();
+      sendSuccess(res, data);
+    } catch (error) {
+      next(error);
+    }
+  };
+
   clubs = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const status = typeof req.query.status === 'string' ? req.query.status : undefined;
@@ -83,10 +92,47 @@ export class AdminController {
     }
   };
 
+  reviewReport = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const report = await this.service.reviewEventReport(
+        req.params.reportId,
+        {id: req.auth!.user.id, name: req.auth!.user.name},
+        req.body,
+      );
+      sendSuccess(res, report);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  exportReportsCsv = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const {filename, csv} = await this.service.exportReportsCsv();
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.status(200).send(csv);
+    } catch (error) {
+      next(error);
+    }
+  };
+
   finance = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const finance = await this.service.listAllFinancialReports();
       sendSuccess(res, finance);
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  exportFinanceCsv = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const {filename, csv} = await this.service.exportFinanceCsv();
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.status(200).send(csv);
     } catch (error) {
       next(error);
     }

@@ -1,10 +1,10 @@
 import React from 'react';
 import {useQuery} from '@tanstack/react-query';
-import {ArrowRight, Calendar, FileSpreadsheet, QrCode, Users} from 'lucide-react';
+import {ArrowRight, Calendar, FileSpreadsheet, Instagram, QrCode, Users} from 'lucide-react';
 import {Link} from 'react-router-dom';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {Card} from '../../components/ui/FormControls.tsx';
-import {ClubLogo, LoadingSkeleton, StatusLabel} from '../../components/ui/Feedback.tsx';
+import {ClubLogo, LoadingSkeleton, SafeExternalLink, StatusLabel} from '../../components/ui/Feedback.tsx';
 import {useAuth} from '../../context/AuthContext.tsx';
 
 export const ClubAdminDashboardPage: React.FC = () => {
@@ -26,7 +26,9 @@ export const ClubAdminDashboardPage: React.FC = () => {
     return <LoadingSkeleton rows={4} />;
   }
 
-  const upcomingCount = events.filter((e) => e.status === 'published').length;
+  const upcomingCount = events.filter(
+    (e) => e.status === 'published' || e.status === 'registration_open',
+  ).length;
   const draftCount = events.filter((e) => e.status === 'draft').length;
   const totalRegistrations = events.reduce((acc, e) => acc + e.registeredCount, 0);
 
@@ -38,7 +40,18 @@ export const ClubAdminDashboardPage: React.FC = () => {
           <div>
             <p className="text-xs font-medium text-violet-700">Club Admin Workspace</p>
             <h1 className="font-display text-2xl font-bold text-slate-900">{club.name}</h1>
-            <p className="text-xs text-slate-500">{club.category} · Scoped club governance</p>
+            <div className="mt-0.5 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+              <span>{club.category} · Scoped club governance</span>
+              {club.instagramUrl && (
+                <SafeExternalLink
+                  href={club.instagramUrl}
+                  className="inline-flex items-center gap-1 font-medium text-pink-700 hover:underline"
+                >
+                  <Instagram className="h-3.5 w-3.5" />
+                  Instagram
+                </SafeExternalLink>
+              )}
+            </div>
           </div>
         </div>
 

@@ -3,12 +3,13 @@ import {zodResolver} from '@hookform/resolvers/zod';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {useForm} from 'react-hook-form';
 import {z} from 'zod';
+import {Instagram} from 'lucide-react';
 import {CLUB_CATEGORIES} from '../../../shared/constants/permissions.ts';
 import {updateClubSchema} from '../../../shared/schemas/validation.ts';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {Button} from '../../components/ui/Button.tsx';
 import {Card, Input, Select, Textarea} from '../../components/ui/FormControls.tsx';
-import {LoadingSkeleton} from '../../components/ui/Feedback.tsx';
+import {LoadingSkeleton, SafeExternalLink} from '../../components/ui/Feedback.tsx';
 import {useAuth} from '../../context/AuthContext.tsx';
 import {useToast} from '../../context/ToastContext.tsx';
 
@@ -39,6 +40,7 @@ export const ClubProfilePage: React.FC = () => {
           description: club.description,
           meetingSchedule: club.meetingSchedule,
           contactEmail: club.contactEmail,
+          instagramUrl: club.instagramUrl || '',
         }
       : undefined,
   });
@@ -102,6 +104,25 @@ export const ClubProfilePage: React.FC = () => {
             error={errors.meetingSchedule?.message}
             {...register('meetingSchedule')}
           />
+          <div>
+            <Input
+              label="Instagram Profile (URL or @handle)"
+              placeholder="https://www.instagram.com/clubhandle/"
+              error={errors.instagramUrl?.message}
+              {...register('instagramUrl')}
+            />
+            {club.instagramUrl && (
+              <div className="mt-1.5">
+                <SafeExternalLink
+                  href={club.instagramUrl}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-pink-700 hover:underline"
+                >
+                  <Instagram className="h-3.5 w-3.5" />
+                  {club.instagramUrl}
+                </SafeExternalLink>
+              </div>
+            )}
+          </div>
 
           <Button type="submit" loading={isSubmitting || updateMutation.isPending}>
             Save Club Profile

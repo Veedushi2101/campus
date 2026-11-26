@@ -1,5 +1,6 @@
 import {DemoDataAdapter as ServerDemoAdapter} from '../../server/adapters/DemoDataAdapter.ts';
-import {signSessionToken} from '../../server/shared/utils/crypto.ts';
+import {escapeCsvCell, rupeesToMinorUnits} from '../../server/shared/utils/crypto.ts';
+import {BusinessRuleError, NotFoundError} from '../../server/shared/errors/AppError.ts';
 import type {
   Club,
   ClubRole,
@@ -8,9 +9,11 @@ import type {
   EventEligibilityRules,
   EventItem,
   EventStatus,
+  FinanceEntryType,
   FinancialLineItem,
   FormAnswerValue,
   FormField,
+  RegistrationForm,
   SystemSettings,
 } from '../../shared/types/domain.ts';
 import type {ClientDataAdapter, EventLifecycleAction} from './DataAdapter.ts';
@@ -344,7 +347,35 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     return (await this.store.updateEventLifecycle(eventId, map[action]))!;
   }
 
-  getEventForm(eventId: string, _version?: number) {
+  async getEventForm(
+    eventId: string,
+    optsOrVersion?: number | {version?: number; publishedOnly?: boolean},
+  ): Promise<RegistrationForm> {
+    const version = typeof optsOrVersion === 'number' ? optsOrVersion : optsOrVersion?.version;
+    const publishedOnly =
+      typeof optsOrVersion === 'object' ? Boolean(optsOrVersion?.publishedOnly) : false;
+
+    if (publishedOnly || typeof version === 'number') {
+      const snap = await this.store.getPublishedFormVersion(eventId, version);
+      if (!snap) {
+        throw new BusinessRuleError(
+          'FORM_NOT_PUBLISHED',
+          'The event organizer has not published a registration form yet.',
+        );
+      }
+      return {
+        id: snap.formId,
+        eventId: snap.eventId,
+        version: snap.version,
+        publishedVersion: snap.version,
+        status: 'published',
+        title: snap.title,
+        description: snap.description,
+        fields: snap.fields,
+        updatedAt: snap.publishedAt,
+      };
+    }
+
     return this.store.getRegistrationForm(eventId);
   }
 
@@ -438,24 +469,59 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     eventId: string,
     params?: {page?: number; pageSize?: number; search?: string},
   ) {
-    const res = await this.store.listAttendanceForEventPaginated(eventId, params);
-    const ev = await this.store.getEventById(eventId);
+    const [res, summary, ev] = await Promise.all([
+      this.store.listAttendanceForEventPaginated(eventId, params),
+      this.store.getAttendanceSummary(eventId),
+      this.store.getEventById(eventId),
+    ]);
     return {
       records: res.items,
       registeredCount: ev?.registeredCount || 0,
-      attendedCount: res.pagination.total,
+      attendedCount: summary.attendedCount,
+      summary,
       pagination: res.pagination,
     };
+  }
+
+  async releaseEventTickets(
+    eventId: string,
+    input?: {confirmParticipantCount?: number; note?: string},
+  ) {
+    const user = (await this.store.getUserById(this.currentUserId))!;
+    void input;
+    return this.store.releaseEventTickets(eventId, {id: user.id, name: user.name});
+  }
+
+  listEventTickets(eventId: string) {
+    return this.store.listEventTickets(eventId);
+  }
+
+  listMyTickets() {
+    return this.store.listStudentTickets(this.currentUserId);
+  }
+
+  async revokeTicket(ticketId: string, reason?: string) {
+    const user = (await this.store.getUserById(this.currentUserId))!;
+    const revoked = await this.store.revokeTicket(ticketId, {id: user.id, name: user.name}, reason);
+    if (!revoked) throw new NotFoundError('Ticket not found');
+    return revoked;
   }
 
   async submitEventReport(
     eventId: string,
     input: {
       outcomeSummary: string;
+      objectives?: string;
+      actualEventDate?: string;
+      participationSummary?: string;
+      outcomes?: string;
       highlights: string;
       challenges: string;
+      feedbackObservations?: string;
+      evidenceUrl?: string;
       actualAttendance: number;
       completionStatus: 'completed' | 'partial';
+      status?: 'draft' | 'submitted';
     },
   ) {
     const ev = (await this.store.getEventById(eventId))!;
@@ -467,7 +533,18 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
       clubName: ev.clubName,
       submittedBy: user.id,
       submittedByName: user.name,
-      ...input,
+      outcomeSummary: input.outcomeSummary,
+      objectives: input.objectives,
+      actualEventDate: input.actualEventDate,
+      participationSummary: input.participationSummary,
+      outcomes: input.outcomes,
+      highlights: input.highlights,
+      challenges: input.challenges,
+      feedbackObservations: input.feedbackObservations,
+      evidenceUrl: input.evidenceUrl,
+      actualAttendance: input.actualAttendance,
+      completionStatus: input.completionStatus,
+      status: input.status || 'submitted',
       registeredTotal: ev.registeredCount,
     });
   }
@@ -507,6 +584,73 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     return this.store.getFinancialReport(eventId);
   }
 
+  getClubFinance(clubId: string) {
+    return this.store.getFinanceSummary({clubId});
+  }
+
+  async createClubFinanceEntry(
+    clubId: string,
+    input: {
+      eventId?: string | null;
+      entryType: FinanceEntryType;
+      sourceOrCategory: string;
+      description: string;
+      amountMinorUnits?: number;
+      amount?: number;
+      transactionDate: string;
+      vendorOrRecipient?: string;
+      receiptUrl?: string;
+      notes?: string;
+    },
+  ) {
+    const user = (await this.store.getUserById(this.currentUserId))!;
+    const amountMinorUnits =
+      typeof input.amountMinorUnits === 'number'
+        ? Math.trunc(input.amountMinorUnits)
+        : rupeesToMinorUnits(input.amount ?? 0);
+    return this.store.createFinanceEntry({
+      clubId,
+      eventId: input.eventId ?? null,
+      entryType: input.entryType,
+      sourceOrCategory: input.sourceOrCategory,
+      description: input.description,
+      amountMinorUnits,
+      transactionDate: input.transactionDate,
+      vendorOrRecipient: input.vendorOrRecipient || '',
+      receiptUrl: input.receiptUrl,
+      notes: input.notes,
+      createdBy: user.id,
+      createdByName: user.name,
+    });
+  }
+
+  async deleteClubFinanceEntry(clubId: string, entryId: string) {
+    await this.store.deleteFinanceEntry(clubId, entryId);
+  }
+
+  getEventFinance(eventId: string) {
+    return this.store.getFinanceSummary({eventId});
+  }
+
+  async createEventFinanceEntry(
+    eventId: string,
+    input: {
+      entryType: FinanceEntryType;
+      sourceOrCategory: string;
+      description: string;
+      amountMinorUnits?: number;
+      amount?: number;
+      transactionDate: string;
+      vendorOrRecipient?: string;
+      receiptUrl?: string;
+      notes?: string;
+    },
+  ) {
+    const ev = await this.store.getEventById(eventId);
+    if (!ev) throw new NotFoundError('Event not found');
+    return this.createClubFinanceEntry(ev.clubId, {...input, eventId: ev.id});
+  }
+
   listNotifications() {
     return this.store.listNotificationsForUser(this.currentUserId);
   }
@@ -521,6 +665,10 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
 
   getAdminDashboard() {
     return this.store.getAdminDashboardStats();
+  }
+
+  getAdminAnalytics() {
+    return this.store.getAdminAnalytics();
   }
 
   listAdminClubs() {
@@ -547,15 +695,73 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     return this.store.listAllEventReports();
   }
 
+  async reviewAdminReport(
+    reportId: string,
+    input: {
+      status: 'under_review' | 'changes_requested' | 'approved' | 'rejected';
+      reviewNotes: string;
+    },
+  ) {
+    const user = (await this.store.getUserById(this.currentUserId))!;
+    return this.store.reviewEventReport(reportId, {id: user.id, name: user.name}, input);
+  }
+
   async getAdminFinance() {
-    const reports = await this.store.listAllFinancialReports();
-    const totalCollections = reports.reduce((s, r) => s + r.totalCollections, 0);
-    const totalExpenses = reports.reduce((s, r) => s + r.totalExpenses, 0);
+    const [reports, ledgerSummary] = await Promise.all([
+      this.store.listAllFinancialReports(),
+      this.store.getFinanceSummary(),
+    ]);
+    const reportCollections = reports.reduce((s, r) => s + r.totalCollections, 0);
+    const reportExpenses = reports.reduce((s, r) => s + r.totalExpenses, 0);
+    const totalCollections = reportCollections + ledgerSummary.totalIncome;
+    const totalExpenses = reportExpenses + ledgerSummary.totalExpenses;
     return {
       reports,
       totalCollections,
       totalExpenses,
       netBalance: totalCollections - totalExpenses,
+      ledgerSummary,
+    };
+  }
+
+  async downloadAdminCsv(kind: 'reports' | 'finance') {
+    if (kind === 'reports') {
+      const reports = await this.store.listAllEventReports();
+      const header = ['Report ID', 'Event', 'Club', 'Status', 'Attendance', 'Submitted By'];
+      const rows = reports.map((r) =>
+        [
+          escapeCsvCell(r.id),
+          escapeCsvCell(r.eventTitle),
+          escapeCsvCell(r.clubName),
+          escapeCsvCell(r.status),
+          escapeCsvCell(`${r.actualAttendance}/${r.registeredTotal}`),
+          escapeCsvCell(r.submittedByName),
+        ].join(','),
+      );
+      const csv = [header.map(escapeCsvCell).join(','), ...rows].join('\n');
+      return {
+        blob: new Blob([csv], {type: 'text/csv;charset=utf-8'}),
+        filename: 'campusverse-event-reports.csv',
+      };
+    }
+
+    const summary = await this.store.getFinanceSummary();
+    const header = ['Entry ID', 'Club', 'Event', 'Type', 'Category', 'Amount (INR)', 'Date'];
+    const rows = summary.entries.map((e) =>
+      [
+        escapeCsvCell(e.id),
+        escapeCsvCell(e.clubName || ''),
+        escapeCsvCell(e.eventTitle || ''),
+        escapeCsvCell(e.entryType),
+        escapeCsvCell(e.sourceOrCategory),
+        escapeCsvCell(e.amount.toFixed(2)),
+        escapeCsvCell(e.transactionDate),
+      ].join(','),
+    );
+    const csv = [header.map(escapeCsvCell).join(','), ...rows].join('\n');
+    return {
+      blob: new Blob([csv], {type: 'text/csv;charset=utf-8'}),
+      filename: 'campusverse-finance-ledger.csv',
     };
   }
 
@@ -571,5 +777,3 @@ export class ClientDemoDataAdapter implements ClientDataAdapter {
     return this.store.updateSystemSettings(updates);
   }
 }
-
-void signSessionToken;

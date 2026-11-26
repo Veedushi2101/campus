@@ -2,6 +2,8 @@ import React, {useEffect, useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {
   AlertTriangle,
+  Camera,
+  CameraOff,
   CheckCircle2,
   Download,
   QrCode,
@@ -34,6 +36,7 @@ export const AttendancePage: React.FC = () => {
   });
 
   const [selectedEventId, setSelectedEventId] = useState(searchParams.get('eventId') || '');
+  const [scannerOpen, setScannerOpen] = useState(false);
   const [qrInput, setQrInput] = useState('');
   const [ledgerSearch, setLedgerSearch] = useState('');
   const [ledgerPage, setLedgerPage] = useState(1);
@@ -151,10 +154,15 @@ export const AttendancePage: React.FC = () => {
     }
   };
 
-  const registeredCount = attendanceSummary?.registeredCount || 0;
-  const attendedCount = attendanceSummary?.attendedCount || 0;
+  const summary = attendanceSummary?.summary;
+  const confirmedCount = summary?.confirmedCount ?? attendanceSummary?.registeredCount ?? 0;
+  const ticketsReleasedCount = summary?.ticketsReleasedCount ?? 0;
+  const ticketsNotReleasedCount = summary?.ticketsNotReleasedCount ?? 0;
+  const attendedCount = summary?.attendedCount ?? attendanceSummary?.attendedCount ?? 0;
+  const remainingCount = summary?.remainingCount ?? Math.max(0, confirmedCount - attendedCount);
   const attendancePct =
-    registeredCount > 0 ? Math.min(100, Math.round((attendedCount / registeredCount) * 100)) : 0;
+    summary?.attendancePercentage ??
+    (confirmedCount > 0 ? Math.min(100, Math.round((attendedCount / confirmedCount) * 100)) : 0);
 
   return (
     <div className="space-y-6">
@@ -164,7 +172,7 @@ export const AttendancePage: React.FC = () => {
             Attendance &amp; QR Check-In Gate
           </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Scan live QR passes via camera, enter opaque tokens manually, or record audited manual
+            Scan released QR passes via camera, enter opaque tokens manually, or record audited manual
             overrides.
           </p>
         </div>
@@ -201,19 +209,81 @@ export const AttendancePage: React.FC = () => {
         </select>
       </Card>
 
+      {/* 6 Real-Time Attendance Metrics */}
+      <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <Card className="p-4">
+          <p className="text-[11px] font-medium text-slate-500">Confirmed</p>
+          <p className="mt-1 font-mono text-xl font-semibold text-slate-900 tabular-nums">
+            {confirmedCount}
+          </p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-[11px] font-medium text-slate-500">Tickets Released</p>
+          <p className="mt-1 font-mono text-xl font-semibold text-emerald-700 tabular-nums">
+            {ticketsReleasedCount}
+          </p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-[11px] font-medium text-slate-500">Not Released</p>
+          <p className="mt-1 font-mono text-xl font-semibold text-amber-700 tabular-nums">
+            {ticketsNotReleasedCount}
+          </p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-[11px] font-medium text-slate-500">Checked In</p>
+          <p className="mt-1 font-mono text-xl font-semibold text-violet-700 tabular-nums">
+            {attendedCount}
+          </p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-[11px] font-medium text-slate-500">Remaining</p>
+          <p className="mt-1 font-mono text-xl font-semibold text-slate-900 tabular-nums">
+            {remainingCount}
+          </p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-[11px] font-medium text-slate-500">Attendance %</p>
+          <p className="mt-1 font-mono text-xl font-semibold text-slate-900 tabular-nums">
+            {attendancePct}%
+          </p>
+        </Card>
+      </div>
+
       <div className="grid gap-6 lg:grid-cols-12">
         <Card className="space-y-4 p-6 lg:col-span-5">
-          <div className="flex items-center gap-2.5 text-violet-700">
-            <QrCode className="h-5 w-5" />
-            <h2 className="font-display text-base font-semibold text-slate-900">
-              QR Pass Verification
-            </h2>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 text-violet-700">
+              <QrCode className="h-5 w-5" />
+              <h2 className="font-display text-base font-semibold text-slate-900">
+                QR Pass Verification
+              </h2>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant={scannerOpen ? 'outline' : 'secondary'}
+              onClick={() => setScannerOpen((prev) => !prev)}
+            >
+              {scannerOpen ? (
+                <>
+                  <CameraOff className="h-3.5 w-3.5" />
+                  Close QR Scanner
+                </>
+              ) : (
+                <>
+                  <Camera className="h-3.5 w-3.5" />
+                  Open QR Scanner
+                </>
+              )}
+            </Button>
           </div>
 
-          <CameraQrScanner
-            disabled={!selectedEventId || scanMutation.isPending}
-            onScanToken={(token) => scanMutation.mutate({qrToken: token, method: 'qr_scan'})}
-          />
+          {scannerOpen && (
+            <CameraQrScanner
+              disabled={!selectedEventId || scanMutation.isPending}
+              onScanToken={(token) => scanMutation.mutate({qrToken: token, method: 'qr_scan'})}
+            />
+          )}
 
           <form onSubmit={handleTokenSubmit} className="space-y-3">
             <label className="block text-xs font-medium text-slate-700">
@@ -223,7 +293,7 @@ export const AttendancePage: React.FC = () => {
               type="text"
               value={qrInput}
               onChange={(e) => setQrInput(e.target.value)}
-              placeholder="CV-QR-XXXXXXXX"
+              placeholder="CV-TCK-XXXXXXXX"
               aria-label="QR Verification Token"
               className="block w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 font-mono text-sm uppercase text-slate-900 focus:border-blue-600"
             />
@@ -259,7 +329,7 @@ export const AttendancePage: React.FC = () => {
             <div className="flex items-baseline justify-between">
               <span className="text-xs font-medium text-slate-500">Gate Turnout</span>
               <span className="font-mono text-sm font-semibold text-slate-900 tabular-nums">
-                {attendedCount} / {registeredCount} ({attendancePct}%)
+                {attendedCount} / {confirmedCount} ({attendancePct}%)
               </span>
             </div>
             <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
@@ -283,10 +353,12 @@ export const AttendancePage: React.FC = () => {
                     Boolean(reg.qrUsedAt) ||
                     reg.attendanceStatus === 'present' ||
                     reg.status === 'attended';
-                  const canCheckIn =
+                  const hasReleasedTicket = reg.ticketStatus === 'released' && Boolean(reg.qrToken);
+                  const canManualCheckIn =
                     !alreadyCheckedIn &&
                     reg.status !== 'waitlisted' &&
                     reg.status !== 'cancelled';
+                  const canQrCheckIn = canManualCheckIn && hasReleasedTicket;
 
                   return (
                     <div
@@ -295,14 +367,20 @@ export const AttendancePage: React.FC = () => {
                     >
                       <div>
                         <p className="text-sm font-medium text-slate-900">{reg.studentName}</p>
-                        <p className="font-mono text-xs text-slate-500">{reg.qrToken}</p>
+                        <p className="font-mono text-xs text-slate-500">
+                          {hasReleasedTicket
+                            ? reg.ticketCode || reg.qrToken
+                            : reg.ticketStatus === 'revoked'
+                              ? 'Ticket revoked'
+                              : 'Ticket not released'}
+                        </p>
                       </div>
                       <div className="flex items-center gap-2">
                         <StatusLabel status={alreadyCheckedIn ? 'attended' : reg.status} />
                         <Button
                           size="sm"
                           variant="outline"
-                          disabled={!canCheckIn || scanMutation.isPending}
+                          disabled={!canQrCheckIn || scanMutation.isPending}
                           onClick={() =>
                             scanMutation.mutate({qrToken: reg.qrToken, method: 'qr_scan'})
                           }
@@ -313,7 +391,7 @@ export const AttendancePage: React.FC = () => {
                         <Button
                           size="sm"
                           variant="ghost"
-                          disabled={!canCheckIn || scanMutation.isPending}
+                          disabled={!canManualCheckIn || scanMutation.isPending}
                           onClick={() => {
                             setManualTarget(reg);
                             setManualReason('');

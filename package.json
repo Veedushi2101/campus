@@ -17,7 +17,9 @@
     "db:push": "drizzle-kit push",
     "db:status": "tsx server/db/status.ts",
     "db:rls": "tsx server/db/applyRls.ts",
-    "db:seed": "tsx server/db/seed.ts"
+    "db:seed": "tsx server/db/seed.ts",
+    "db:seed:test": "tsx server/db/seedTestAccounts.ts",
+    "db:reset:test": "tsx server/db/seedTestAccounts.ts --reset"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

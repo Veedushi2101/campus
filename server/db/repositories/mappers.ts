@@ -13,7 +13,10 @@ import type {
   EventFormVersion,
   EventItem,
   EventReport,
+  EventReportStatus,
   EventStatus,
+  FinanceEntry,
+  FinanceEntryType,
   FinancialLineItem,
   FinancialReport,
   FormField,
@@ -23,6 +26,8 @@ import type {
   Registration,
   RegistrationForm,
   RegistrationStatus,
+  TicketRecord,
+  TicketStatus,
   UserAccount,
 } from '../../../shared/types/domain.ts';
 import type {
@@ -34,11 +39,13 @@ import type {
   eventForms,
   eventReports,
   events,
+  financeEntries,
   financeLineItems,
   financeReports,
   formFields,
   notifications,
   registrations,
+  tickets,
   users,
 } from '../schema.ts';
 
@@ -148,6 +155,7 @@ export function mapClubRow(
     foundedYear: row.foundedYear,
     meetingSchedule: row.meetingSchedule,
     contactEmail: row.contactEmail,
+    instagramUrl: row.instagramUrl || '',
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -233,6 +241,8 @@ export function mapEventRow(
     feeAmount: Number(row.feeAmount),
     feeMinorUnits: row.feeMinorUnits ?? toCents(row.feeAmount),
     eligibilityRules: row.eligibilityRules || {},
+    ticketsReleasedAt: row.ticketsReleasedAt ? row.ticketsReleasedAt.toISOString() : null,
+    ticketsReleasedBy: row.ticketsReleasedBy ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -285,6 +295,36 @@ export function mapFormVersionRow(row: typeof eventFormVersions.$inferSelect): E
   };
 }
 
+export function mapTicketRow(
+  row: typeof tickets.$inferSelect,
+  extras?: {
+    studentName?: string;
+    studentEmail?: string;
+    registrationStatus?: RegistrationStatus;
+    unsealedQrToken?: string;
+  },
+): TicketRecord {
+  const status = row.status as TicketStatus;
+  return {
+    id: row.id,
+    registrationId: row.registrationId,
+    eventId: row.eventId,
+    userId: row.userId,
+    studentName: extras?.studentName,
+    studentEmail: extras?.studentEmail,
+    registrationStatus: extras?.registrationStatus,
+    ticketCode: row.ticketCode,
+    status,
+    qrToken: status === 'released' ? extras?.unsealedQrToken || undefined : undefined,
+    releasedBy: row.releasedBy ?? null,
+    releasedAt: row.releasedAt ? row.releasedAt.toISOString() : null,
+    revokedBy: row.revokedBy ?? null,
+    revokedAt: row.revokedAt ? row.revokedAt.toISOString() : null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
 export function mapRegistrationRow(
   row: typeof registrations.$inferSelect,
   extras?: {
@@ -297,9 +337,14 @@ export function mapRegistrationRow(
     studentEmail?: string;
     qrUsedAt?: string | null;
     waitlistPosition?: number | null;
+    ticketStatus?: TicketStatus;
+    ticketCode?: string;
+    ticketReleasedAt?: string | null;
+    qrToken?: string;
   },
 ): Registration {
   const status = row.status as RegistrationStatus;
+  const ticketStatus = extras?.ticketStatus ?? 'not_released';
   return {
     id: row.id,
     eventId: row.eventId,
@@ -315,9 +360,12 @@ export function mapRegistrationRow(
     formVersionId: row.formVersionId ?? null,
     answers: row.answers || {},
     status,
+    ticketStatus,
+    ticketCode: extras?.ticketCode,
+    ticketReleasedAt: extras?.ticketReleasedAt ?? null,
     attendanceStatus: status === 'attended' || Boolean(extras?.qrUsedAt) ? 'present' : 'not_checked_in',
     waitlistPosition: extras?.waitlistPosition ?? null,
-    qrToken: row.qrToken,
+    qrToken: ticketStatus === 'released' ? (extras?.qrToken ?? '') : '',
     qrUsedAt: extras?.qrUsedAt ?? null,
     createdAt: row.submittedAt.toISOString(),
   };
@@ -336,12 +384,25 @@ export function mapEventReportRow(
     submittedBy: row.submittedBy || '',
     submittedByName: row.submittedByName,
     outcomeSummary: row.summary,
+    objectives: row.objectives || '',
+    actualEventDate: row.actualEventDate ? row.actualEventDate.toISOString() : undefined,
+    participationSummary: row.participationSummary || '',
+    outcomes: row.outcomes || '',
     highlights: row.highlights,
     challenges: row.challenges,
+    feedbackObservations: row.feedbackObservations || '',
+    evidenceUrl: row.evidenceUrl || '',
     actualAttendance: row.actualAttendance,
     registeredTotal: row.registeredTotal,
     completionStatus: row.completionStatus as EventReport['completionStatus'],
+    status: (row.status || 'submitted') as EventReportStatus,
+    reviewedBy: row.reviewedBy ?? null,
+    reviewedByName: row.reviewedByName ?? null,
+    reviewedAt: row.reviewedAt ? row.reviewedAt.toISOString() : null,
+    reviewNotes: row.reviewNotes || '',
+    history: Array.isArray(row.history) ? row.history : [],
     submittedAt: row.submittedAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
   };
 }
 
@@ -359,6 +420,10 @@ export function mapFinancialReportRow(
     notes: i.notes ?? undefined,
   }));
 
+  const collectionsMinor = row.totalCollectionsMinorUnits || toCents(row.totalCollections);
+  const expensesMinor = row.totalExpensesMinorUnits || toCents(row.totalExpenses);
+  const netMinor = collectionsMinor - expensesMinor;
+
   return {
     id: row.id,
     eventId: row.eventId,
@@ -367,12 +432,42 @@ export function mapFinancialReportRow(
     clubName: extras.clubName,
     submittedBy: row.submittedBy || '',
     submittedByName: row.submittedByName,
-    totalCollections: Number(row.totalCollections),
-    totalExpenses: Number(row.totalExpenses),
-    netBalance: Number(row.netBalance),
+    totalCollections: fromCentsToNumber(collectionsMinor),
+    totalExpenses: fromCentsToNumber(expensesMinor),
+    netBalance: fromCentsToNumber(netMinor),
+    totalCollectionsMinorUnits: collectionsMinor,
+    totalExpensesMinorUnits: expensesMinor,
+    netBalanceMinorUnits: netMinor,
     lineItems,
     notes: row.notes,
     submittedAt: row.submittedAt.toISOString(),
+  };
+}
+
+export function mapFinanceEntryRow(
+  row: typeof financeEntries.$inferSelect,
+  extras?: {clubName?: string; eventTitle?: string | null},
+): FinanceEntry {
+  const minor = Number(row.amountMinorUnits) || 0;
+  return {
+    id: row.id,
+    clubId: row.clubId,
+    clubName: extras?.clubName,
+    eventId: row.eventId ?? null,
+    eventTitle: extras?.eventTitle ?? null,
+    entryType: row.entryType as FinanceEntryType,
+    sourceOrCategory: row.sourceOrCategory,
+    description: row.description,
+    amountMinorUnits: minor,
+    amount: fromCentsToNumber(minor),
+    transactionDate: row.transactionDate.toISOString(),
+    vendorOrRecipient: row.vendorOrRecipient,
+    receiptUrl: row.receiptUrl || '',
+    notes: row.notes || '',
+    createdBy: row.createdBy || '',
+    createdByName: row.createdByName,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
   };
 }
 

@@ -89,7 +89,9 @@ export class RegistrationsController {
       if (!isOwner && !hasClubAccess) {
         throw new ForbiddenError('You do not have permission to view this registration');
       }
-      sendSuccess(res, reg);
+      const safeReg =
+        isOwner && reg.ticketStatus === 'released' ? reg : {...reg, qrToken: ''};
+      sendSuccess(res, safeReg);
     } catch (error) {
       next(error);
     }

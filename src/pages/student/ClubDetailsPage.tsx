@@ -1,12 +1,12 @@
 import React, {useState} from 'react';
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
-import {AlertCircle, ArrowLeft, Calendar, Mail, MapPin, UserMinus, UserPlus, Users} from 'lucide-react';
+import {AlertCircle, ArrowLeft, Calendar, Instagram, Mail, MapPin, UserMinus, UserPlus, Users} from 'lucide-react';
 import {Link, useParams} from 'react-router-dom';
 import {CLUB_ROLE_LABELS} from '../../../shared/constants/permissions.ts';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {Button} from '../../components/ui/Button.tsx';
 import {Card} from '../../components/ui/FormControls.tsx';
-import {ClubLogo, LoadingSkeleton, StatusLabel} from '../../components/ui/Feedback.tsx';
+import {ClubLogo, LoadingSkeleton, SafeExternalLink, StatusLabel} from '../../components/ui/Feedback.tsx';
 import {useAuth} from '../../context/AuthContext.tsx';
 import {useToast} from '../../context/ToastContext.tsx';
 
@@ -145,10 +145,21 @@ export const ClubDetailsPage: React.FC = () => {
         <div className="mt-6 border-t border-slate-100 pt-6">
           <h2 className="font-display text-sm font-semibold text-slate-900">About the Club</h2>
           <p className="mt-2 text-sm text-slate-600 leading-relaxed">{club.description}</p>
-          <p className="mt-3 inline-flex items-center gap-1.5 text-xs text-slate-500">
-            <Mail className="h-3.5 w-3.5" />
-            {club.contactEmail}
-          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-slate-500">
+            <span className="inline-flex items-center gap-1.5">
+              <Mail className="h-3.5 w-3.5" />
+              {club.contactEmail}
+            </span>
+            {club.instagramUrl && (
+              <SafeExternalLink
+                href={club.instagramUrl}
+                className="inline-flex items-center gap-1.5 font-medium text-pink-700 hover:text-pink-800 hover:underline"
+              >
+                <Instagram className="h-3.5 w-3.5" />
+                Instagram Profile
+              </SafeExternalLink>
+            )}
+          </div>
         </div>
       </Card>
 

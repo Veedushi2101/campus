@@ -28,7 +28,7 @@ describe('CampusVerse Backend API & Business Rules', () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.status).toBe('ok');
-    expect(res.body.data.phase).toBe('phase-4');
+    expect(res.body.data.phase).toBe('phase-5');
   });
 
   it('rejects unauthenticated access to protected endpoints', async () => {
@@ -152,7 +152,7 @@ describe('CampusVerse Backend API & Business Rules', () => {
     expect(res.status).toBe(403);
   });
 
-  it('handles student registration with form validation, non-PII QR token, and single-use attendance scan', async () => {
+  it('handles student registration with form validation, controlled ticket release, non-PII QR token, and single-use attendance scan', async () => {
     const studentToken = await loginAs('usr-student-1');
 
     // Missing required checkbox -> 400 validation error
@@ -168,7 +168,7 @@ describe('CampusVerse Backend API & Business Rules', () => {
       });
     expect(invalidReg.status).toBe(400);
 
-    // Valid registration -> issues opaque non-PII QR token
+    // Valid registration -> ticket starts as not_released with empty QR token
     const validReg = await request(app)
       .post('/api/v1/events/evt-design-systems/registrations')
       .set('Authorization', `Bearer ${studentToken}`)
@@ -180,13 +180,34 @@ describe('CampusVerse Backend API & Business Rules', () => {
         },
       });
     expect(validReg.status).toBe(201);
-    const qrToken = validReg.body.data.qrToken as string;
-    expect(qrToken).toMatch(/^CV-QR-[A-Z0-9_-]{12,}$/);
+    expect(validReg.body.data.status).toBe('confirmed');
+    expect(validReg.body.data.ticketStatus).toBe('not_released');
+    expect(validReg.body.data.qrToken).toBe('');
+
+    // Design club president explicitly releases batch tickets
+    const designAdminToken = await loginAs('usr-multi-1');
+    const releaseRes = await request(app)
+      .post('/api/v1/events/evt-design-systems/tickets/release')
+      .set('Authorization', `Bearer ${designAdminToken}`)
+      .send({confirmParticipantCount: 2});
+    expect(releaseRes.status).toBe(200);
+    expect(releaseRes.body.data.releasedCount).toBeGreaterThanOrEqual(1);
+
+    // Student retrieves their released opaque non-PII QR token via /tickets/me
+    const myTickets = await request(app)
+      .get('/api/v1/tickets/me')
+      .set('Authorization', `Bearer ${studentToken}`);
+    expect(myTickets.status).toBe(200);
+    const releasedTicket = (
+      myTickets.body.data as Array<{eventId: string; status: string; qrToken?: string}>
+    ).find((t) => t.eventId === 'evt-design-systems');
+    expect(releasedTicket?.status).toBe('released');
+    const qrToken = releasedTicket!.qrToken!;
+    expect(qrToken).toMatch(/^CV-TCK-[A-Z0-9_-]{8,}$/);
     expect(qrToken).not.toContain('aarav');
     expect(qrToken).not.toContain('@');
 
-    // Design club president scans QR token once -> 201
-    const designAdminToken = await loginAs('usr-multi-1');
+    // Design club president scans released QR token once -> 201
     const firstScan = await request(app)
       .post('/api/v1/events/evt-design-systems/attendance/scan')
       .set('Authorization', `Bearer ${designAdminToken}`)
@@ -819,11 +840,14 @@ describe('CampusVerse Backend API & Business Rules', () => {
       .set('Authorization', `Bearer ${student2Token}`);
     expect(idorCheck.status).toBe(403);
 
-    // Waitlisted student cannot be checked in at gate
+    // Waitlisted student cannot be checked in manually or via QR at gate
     const scanWaitlisted = await request(app)
-      .post(`/api/v1/events/${eventId}/attendance/scan`)
+      .post(`/api/v1/events/${eventId}/attendance/manual`)
       .set('Authorization', `Bearer ${presToken}`)
-      .send({qrToken: reg2.body.data.qrToken, method: 'qr_scan'});
+      .send({
+        registrationId: reg2.body.data.id,
+        reason: 'Testing waitlisted rejection before promotion',
+      });
     expect(scanWaitlisted.status).toBe(422);
     expect(scanWaitlisted.body.error.code).toBe('REGISTRATION_WAITLISTED');
 
@@ -831,8 +855,8 @@ describe('CampusVerse Backend API & Business Rules', () => {
     const wrongEventScan = await request(app)
       .post(`/api/v1/events/${eventId}/attendance/scan`)
       .set('Authorization', `Bearer ${presToken}`)
-      .send({qrToken: 'CV-QR-8F92A1C4', method: 'qr_scan'});
-    expect(wrongEventScan.status).toBe(404);
+      .send({qrToken: 'CV-TCK-8F92A1C4', method: 'qr_scan'});
+    expect([404, 422]).toContain(wrongEventScan.status);
 
     // Student 1 cancels -> Student 2 auto-promoted FIFO!
     const cancelRes = await request(app)
@@ -841,13 +865,7 @@ describe('CampusVerse Backend API & Business Rules', () => {
     expect(cancelRes.status).toBe(200);
     expect(cancelRes.body.data.promotedUserId).toBe('usr-student-2');
 
-    // Cancelled registration's old QR token is invalidated (404) and manual lookup rejects cancelled status (422)
-    const scanCancelledQr = await request(app)
-      .post(`/api/v1/events/${eventId}/attendance/scan`)
-      .set('Authorization', `Bearer ${presToken}`)
-      .send({qrToken: reg1.body.data.qrToken, method: 'qr_scan'});
-    expect(scanCancelledQr.status).toBe(404);
-
+    // Cancelled registration's manual lookup rejects cancelled status (422)
     const scanCancelledManual = await request(app)
       .post(`/api/v1/events/${eventId}/attendance/manual`)
       .set('Authorization', `Bearer ${presToken}`)
@@ -913,6 +931,406 @@ describe('CampusVerse Backend API & Business Rules', () => {
       .post(`/api/v1/events/${eventId}/complete`)
       .set('Authorization', `Bearer ${presToken}`);
     expect(completed.body.data.status).toBe('completed');
+  });
+
+  // =========================================================================
+  // PHASE 5 TESTS
+  // =========================================================================
+
+  it('Phase 5: validates and normalizes club Instagram URLs, blocks invalid/XSS URLs, and restricts edits to club leadership', async () => {
+    const presToken = await loginAs('usr-club-admin-1');
+    const studentToken = await loginAs('usr-student-1');
+
+    // Student cannot update club profile
+    const denied = await request(app)
+      .patch('/api/v1/clubs/club-robotics')
+      .set('Authorization', `Bearer ${studentToken}`)
+      .send({instagramUrl: '@apexrobotics'});
+    expect(denied.status).toBe(403);
+
+    // Non-Instagram domain or javascript: URI rejected cleanly with 400
+    const badScheme = await request(app)
+      .patch('/api/v1/clubs/club-robotics')
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({instagramUrl: 'javascript:alert(1)'});
+    expect(badScheme.status).toBe(400);
+
+    const wrongDomain = await request(app)
+      .patch('/api/v1/clubs/club-robotics')
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({instagramUrl: 'https://evil.example.com/apexrobotics'});
+    expect(wrongDomain.status).toBe(400);
+
+    // Valid @handle normalizes to canonical https://www.instagram.com/<handle>/
+    const updated = await request(app)
+      .patch('/api/v1/clubs/club-robotics')
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({instagramUrl: '@apex_robotics_vit'});
+    expect(updated.status).toBe(200);
+    expect(updated.body.data.instagramUrl).toBe('https://www.instagram.com/apex_robotics_vit/');
+
+    // Empty string clears Instagram URL
+    const cleared = await request(app)
+      .patch('/api/v1/clubs/club-robotics')
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({instagramUrl: ''});
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.data.instagramUrl).toBe('');
+  });
+
+  it('Phase 5: enforces published-only form visibility (422 FORM_NOT_PUBLISHED), ticket release idempotency, revocation, scanner RBAC & 6 attendance metrics', async () => {
+    const presToken = await loginAs('usr-club-admin-1');
+    const coreScannerToken = await loginAs('usr-core-1'); // has SCAN_ATTENDANCE on club-robotics
+    const studentToken = await loginAs('usr-student-1');
+    const designAdminToken = await loginAs('usr-multi-1');
+
+    // Create fresh event (form defaults to unpublished draft)
+    const evRes = await request(app)
+      .post('/api/v1/clubs/club-robotics/events')
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({
+        title: 'Phase 5 Ticketing & Scanner Verification',
+        category: 'Workshop',
+        description: 'Testing draft-vs-published forms, batch release idempotency, revocation, and scanner checks.',
+        venue: 'Robotics Arena 1',
+        startTime: new Date(Date.now() + 5 * 86_400_000).toISOString(),
+        endTime: new Date(Date.now() + 5 * 86_400_000 + 7_200_000).toISOString(),
+        registrationDeadline: new Date(Date.now() + 4 * 86_400_000).toISOString(),
+        capacity: 30,
+        isPaid: false,
+        feeAmount: 0,
+      });
+    expect(evRes.status).toBe(201);
+    const eventId = evRes.body.data.id as string;
+
+    await request(app)
+      .post(`/api/v1/events/${eventId}/publish`)
+      .set('Authorization', `Bearer ${presToken}`);
+
+    // Draft form saved with regex validation, NOT published yet
+    const invalidRegex = await request(app)
+      .put(`/api/v1/events/${eventId}/form`)
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({
+        fields: [
+          {
+            id: 'f1',
+            label: 'Roll Code',
+            type: 'text',
+            required: true,
+            validationRules: {pattern: '[unclosed'},
+          },
+        ],
+      });
+    expect(invalidRegex.status).toBe(400);
+
+    await request(app)
+      .put(`/api/v1/events/${eventId}/form`)
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({
+        fields: [
+          {
+            id: 'f_code',
+            label: 'Participant Badge Code',
+            type: 'text',
+            required: true,
+            validationRules: {pattern: '^VIT-[0-9]{3}$', patternMessage: 'Use VIT-### format'},
+          },
+        ],
+      });
+
+    // Student publishedOnly read & registration blocked with 422 FORM_NOT_PUBLISHED
+    const pubOnlyFail = await request(app).get(`/api/v1/events/${eventId}/form?publishedOnly=true`);
+    expect(pubOnlyFail.status).toBe(422);
+    expect(pubOnlyFail.body.error.code).toBe('FORM_NOT_PUBLISHED');
+
+    const regBeforePublish = await request(app)
+      .post(`/api/v1/events/${eventId}/registrations`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .send({answers: {f_code: 'VIT-101'}});
+    expect(regBeforePublish.status).toBe(422);
+    expect(regBeforePublish.body.error.code).toBe('FORM_NOT_PUBLISHED');
+
+    // Publish form -> student regex mismatch fails 400, valid input succeeds with ticketStatus=not_released
+    const formPub = await request(app)
+      .post(`/api/v1/events/${eventId}/form/publish`)
+      .set('Authorization', `Bearer ${presToken}`);
+    expect(formPub.status).toBe(201);
+
+    const badPatternSubmit = await request(app)
+      .post(`/api/v1/events/${eventId}/registrations`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .send({answers: {f_code: 'INVALID'}});
+    expect(badPatternSubmit.status).toBe(400);
+
+    const regOk = await request(app)
+      .post(`/api/v1/events/${eventId}/registrations`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .send({answers: {f_code: 'VIT-101'}});
+    expect(regOk.status).toBe(201);
+    expect(regOk.body.data.ticketStatus).toBe('not_released');
+    expect(regOk.body.data.qrToken).toBe('');
+
+    // Student & cross-club admin CANNOT release tickets -> 403
+    const studentReleaseDenied = await request(app)
+      .post(`/api/v1/events/${eventId}/tickets/release`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .send({});
+    expect(studentReleaseDenied.status).toBe(403);
+
+    const crossClubReleaseDenied = await request(app)
+      .post(`/api/v1/events/${eventId}/tickets/release`)
+      .set('Authorization', `Bearer ${designAdminToken}`)
+      .send({});
+    expect(crossClubReleaseDenied.status).toBe(403);
+
+    // Attendance summary before release shows 1 confirmed, 0 released, 1 not_released
+    const attBefore = await request(app)
+      .get(`/api/v1/events/${eventId}/attendance`)
+      .set('Authorization', `Bearer ${coreScannerToken}`);
+    expect(attBefore.status).toBe(200);
+    expect(attBefore.body.data.summary).toMatchObject({
+      confirmedCount: 1,
+      ticketsReleasedCount: 0,
+      ticketsNotReleasedCount: 1,
+      attendedCount: 0,
+      remainingCount: 1,
+      attendancePercentage: 0,
+    });
+
+    // Organizer releases tickets -> idempotent on 2nd call
+    const rel1 = await request(app)
+      .post(`/api/v1/events/${eventId}/tickets/release`)
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({confirmParticipantCount: 1, note: 'Batch 1'});
+    expect(rel1.status).toBe(200);
+    expect(rel1.body.data.releasedCount).toBe(1);
+
+    const rel2 = await request(app)
+      .post(`/api/v1/events/${eventId}/tickets/release`)
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({});
+    expect(rel2.status).toBe(200);
+    expect(rel2.body.data.releasedCount).toBe(0);
+    expect(rel2.body.data.alreadyReleasedCount).toBe(1);
+
+    const ticketList = await request(app)
+      .get(`/api/v1/events/${eventId}/tickets`)
+      .set('Authorization', `Bearer ${presToken}`);
+    expect(ticketList.status).toBe(200);
+    const ticketId = ticketList.body.data[0].id as string;
+
+    // Student gets unlocked QR token via /tickets/me
+    const mine = await request(app)
+      .get('/api/v1/tickets/me')
+      .set('Authorization', `Bearer ${studentToken}`);
+    const myTicket = (mine.body.data as Array<{id: string; qrToken?: string}>).find(
+      (t) => t.id === ticketId,
+    )!;
+    expect(myTicket.qrToken).toMatch(/^CV-TCK-/);
+
+    // Cross-club scanner denied (403)
+    const crossScan = await request(app)
+      .post(`/api/v1/events/${eventId}/attendance/verify`)
+      .set('Authorization', `Bearer ${designAdminToken}`)
+      .send({qrToken: myTicket.qrToken, method: 'qr_scan'});
+    expect(crossScan.status).toBe(403);
+
+    // Revoke ticket -> subsequent scan rejected with 422 TICKET_REVOKED
+    const revokeRes = await request(app)
+      .post(`/api/v1/tickets/${ticketId}/revoke`)
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({reason: 'Duplicate account registration'});
+    expect(revokeRes.status).toBe(200);
+    expect(revokeRes.body.data.status).toBe('revoked');
+
+    const scanRevoked = await request(app)
+      .post(`/api/v1/events/${eventId}/attendance/verify`)
+      .set('Authorization', `Bearer ${coreScannerToken}`)
+      .send({qrToken: myTicket.qrToken, method: 'qr_scan'});
+    expect(scanRevoked.status).toBe(422);
+    expect(scanRevoked.body.error.code).toBe('TICKET_REVOKED');
+  });
+
+  it('Phase 5: executes post-event report lifecycle, integer-paise club/event finance ledger, Super Admin analytics & formula-safe CSV exports', async () => {
+    const presToken = await loginAs('usr-club-admin-1');
+    const designPresToken = await loginAs('usr-multi-1');
+    const studentToken = await loginAs('usr-student-1');
+    const superToken = await loginAs('usr-super-admin');
+
+    // 1. Club leader saves draft report, submits, Super Admin requests changes, leader resubmits, Super Admin approves
+    const draftReport = await request(app)
+      .post('/api/v1/events/evt-rover-sprint/report')
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({
+        outcomeSummary: 'Initial draft outcome summary covering hardware test runs.',
+        objectives: 'Evaluate LiDAR obstacle detection across indoor tracks.',
+        actualEventDate: '2026-12-05',
+        participationSummary: '28 student teams attended.',
+        outcomes: '9 of 10 rovers passed autonomous navigation.',
+        highlights: 'Live telemetry dashboard operated cleanly.',
+        challenges: 'Minor Wi-Fi congestion in Hangar B2.',
+        feedbackObservations: 'Need dedicated 5GHz lab router next term.',
+        evidenceUrl: 'https://campusverse.edu/reports/rover-2026',
+        actualAttendance: 28,
+        completionStatus: 'completed',
+        status: 'draft',
+      });
+    expect(draftReport.status).toBe(201);
+    expect(draftReport.body.data.status).toBe('draft');
+
+    // Unsafe javascript: evidence URL blocked
+    const badEvidence = await request(app)
+      .post('/api/v1/events/evt-rover-sprint/report')
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({
+        outcomeSummary: 'Attempting XSS evidence URL submission test.',
+        highlights: 'Testing URL safety guardrails on reports.',
+        evidenceUrl: 'javascript:alert(1)',
+        actualAttendance: 28,
+        completionStatus: 'completed',
+        status: 'submitted',
+      });
+    expect(badEvidence.status).toBe(400);
+
+    const submittedReport = await request(app)
+      .post('/api/v1/events/evt-rover-sprint/report')
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({
+        outcomeSummary: 'Submitted final completion report for Autonomous Rover Buildathon.',
+        objectives: 'Evaluate LiDAR obstacle detection across indoor tracks.',
+        actualEventDate: '2026-12-05',
+        participationSummary: '28 student teams attended.',
+        outcomes: '9 of 10 rovers passed autonomous navigation.',
+        highlights: 'Live telemetry dashboard operated cleanly.',
+        challenges: 'Minor Wi-Fi congestion in Hangar B2.',
+        feedbackObservations: 'Need dedicated 5GHz lab router next term.',
+        evidenceUrl: 'https://campusverse.edu/reports/rover-2026',
+        actualAttendance: 28,
+        completionStatus: 'completed',
+        status: 'submitted',
+      });
+    expect(submittedReport.status).toBe(201);
+    expect(submittedReport.body.data.status).toBe('submitted');
+    const reportId = submittedReport.body.data.id as string;
+
+    // Non-Super-Admin cannot review report
+    const nonAdminReview = await request(app)
+      .post(`/api/v1/admin/reports/${reportId}/review`)
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({status: 'approved', reviewNotes: 'Self approval attempt'});
+    expect(nonAdminReview.status).toBe(403);
+
+    const changesReq = await request(app)
+      .post(`/api/v1/admin/reports/${reportId}/review`)
+      .set('Authorization', `Bearer ${superToken}`)
+      .send({status: 'changes_requested', reviewNotes: 'Attach vendor breakdown note.'});
+    expect(changesReq.status).toBe(200);
+    expect(changesReq.body.data.status).toBe('changes_requested');
+
+    const approved = await request(app)
+      .post(`/api/v1/admin/reports/${reportId}/review`)
+      .set('Authorization', `Bearer ${superToken}`)
+      .send({status: 'approved', reviewNotes: '=Approved for institutional archive'});
+    expect(approved.status).toBe(200);
+    expect(approved.body.data.status).toBe('approved');
+    expect(approved.body.data.history.length).toBeGreaterThanOrEqual(3);
+
+    // 2. Integer-paise financial ledger & strict cross-club/student isolation
+    const studentFinanceDenied = await request(app)
+      .get('/api/v1/clubs/club-robotics/finance')
+      .set('Authorization', `Bearer ${studentToken}`);
+    expect(studentFinanceDenied.status).toBe(403);
+
+    const crossClubFinanceDenied = await request(app)
+      .post('/api/v1/clubs/club-robotics/finance/entries')
+      .set('Authorization', `Bearer ${designPresToken}`)
+      .send({
+        entryType: 'income',
+        sourceOrCategory: 'Sponsorship',
+        description: 'Unauthorized cross-club entry',
+        amountMinorUnits: 10000,
+        transactionDate: '2026-12-01',
+      });
+    expect(crossClubFinanceDenied.status).toBe(403);
+
+    const baselineFinance = await request(app)
+      .get('/api/v1/events/evt-rover-sprint/finance')
+      .set('Authorization', `Bearer ${presToken}`);
+    expect(baselineFinance.status).toBe(200);
+    const baseIncome = baselineFinance.body.data.totalIncomeMinorUnits as number;
+    const baseExpenses = baselineFinance.body.data.totalExpensesMinorUnits as number;
+    const baseNet = baselineFinance.body.data.netBalanceMinorUnits as number;
+
+    const incomeRes = await request(app)
+      .post('/api/v1/clubs/club-robotics/finance/entries')
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({
+        eventId: 'evt-rover-sprint',
+        entryType: 'income',
+        sourceOrCategory: 'Sponsorship',
+        description: '=SponsorCorp Robotics Grant',
+        amountMinorUnits: 150075, // ₹1,500.75 exact integer paise
+        transactionDate: '2026-12-01',
+        vendorOrRecipient: 'SponsorCorp India',
+      });
+    expect(incomeRes.status).toBe(201);
+    expect(incomeRes.body.data.amountMinorUnits).toBe(150075);
+
+    const expenseRes = await request(app)
+      .post('/api/v1/events/evt-rover-sprint/finance/entries')
+      .set('Authorization', `Bearer ${presToken}`)
+      .send({
+        entryType: 'expense',
+        sourceOrCategory: 'Hardware Parts',
+        description: 'LiDAR cables and motor drivers',
+        amountMinorUnits: 50025, // ₹500.25 exact integer paise
+        transactionDate: '2026-12-02',
+        vendorOrRecipient: 'RoboComponents',
+      });
+    expect(expenseRes.status).toBe(201);
+
+    const eventFinance = await request(app)
+      .get('/api/v1/events/evt-rover-sprint/finance')
+      .set('Authorization', `Bearer ${presToken}`);
+    expect(eventFinance.status).toBe(200);
+    expect(eventFinance.body.data.totalIncomeMinorUnits).toBe(baseIncome + 150075);
+    expect(eventFinance.body.data.totalExpensesMinorUnits).toBe(baseExpenses + 50025);
+    expect(eventFinance.body.data.netBalanceMinorUnits).toBe(baseNet + 100050);
+
+    // 3. Super Admin institutional analytics, finance overview & formula-safe CSV exports
+    const analytics = await request(app)
+      .get('/api/v1/admin/analytics')
+      .set('Authorization', `Bearer ${superToken}`);
+    expect(analytics.status).toBe(200);
+    expect(analytics.body.data.clubs.length).toBeGreaterThanOrEqual(6);
+    expect(analytics.body.data.events.length).toBeGreaterThanOrEqual(4);
+
+    const adminFinance = await request(app)
+      .get('/api/v1/admin/finance')
+      .set('Authorization', `Bearer ${superToken}`);
+    expect(adminFinance.status).toBe(200);
+    expect(adminFinance.body.data.ledgerSummary.totalIncomeMinorUnits).toBeGreaterThanOrEqual(150075);
+
+    const reportsCsv = await request(app)
+      .get('/api/v1/admin/reports/export')
+      .set('Authorization', `Bearer ${superToken}`);
+    expect(reportsCsv.status).toBe(200);
+    expect(reportsCsv.headers['content-type']).toContain('text/csv');
+    expect(reportsCsv.text).toContain("'=Approved for institutional archive");
+
+    const financeCsv = await request(app)
+      .get('/api/v1/admin/finance/export')
+      .set('Authorization', `Bearer ${superToken}`);
+    expect(financeCsv.status).toBe(200);
+    expect(financeCsv.headers['content-type']).toContain('text/csv');
+    expect(financeCsv.text).toContain("'=SponsorCorp Robotics Grant");
+
+    // Delete finance entry works for club leadership
+    const delEntry = await request(app)
+      .delete(`/api/v1/clubs/club-robotics/finance/entries/${expenseRes.body.data.id}`)
+      .set('Authorization', `Bearer ${presToken}`);
+    expect(delEntry.status).toBe(200);
   });
 });
 

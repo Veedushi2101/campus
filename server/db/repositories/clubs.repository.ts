@@ -321,6 +321,7 @@ export class ClubsRepository {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    instagramUrl?: string;
     foundedYear?: number;
     status?: ClubStatus;
     createdByUserId?: string;
@@ -359,6 +360,7 @@ export class ClubsRepository {
             description: input.description.trim(),
             meetingSchedule: input.meetingSchedule.trim(),
             contactEmail: input.contactEmail.trim(),
+            instagramUrl: input.instagramUrl?.trim() || '',
             status: input.status || 'active',
             followerCount: 0,
             foundedYear: input.foundedYear || new Date().getFullYear(),
@@ -398,6 +400,7 @@ export class ClubsRepository {
         setData.meetingSchedule = updates.meetingSchedule.trim();
       }
       if (updates.contactEmail !== undefined) setData.contactEmail = updates.contactEmail.trim();
+      if (updates.instagramUrl !== undefined) setData.instagramUrl = updates.instagramUrl.trim();
       if (updates.logoUrl !== undefined) setData.logoUrl = updates.logoUrl;
 
       try {

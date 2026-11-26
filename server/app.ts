@@ -23,6 +23,7 @@ import {createMembershipsRoutes} from './modules/memberships/memberships.routes.
 import {createNotificationsRoutes} from './modules/notifications/notifications.routes.ts';
 import {createRegistrationsRoutes} from './modules/registrations/registrations.routes.ts';
 import {createReportsRoutes} from './modules/reports/reports.routes.ts';
+import {createTicketsRoutes} from './modules/tickets/tickets.routes.ts';
 import {createUsersRoutes} from './modules/users/users.routes.ts';
 import {sendError, sendSuccess} from './shared/responses/apiResponse.ts';
 
@@ -92,7 +93,7 @@ export function createApp(adapter: DataAdapter = demoDataAdapter): Express {
     sendSuccess(res, {
       status: 'ok',
       service: 'campusverse-api',
-      phase: 'phase-4',
+      phase: 'phase-5',
       mode: persistenceMode === 'in_memory_demo' ? 'demo' : 'production',
       persistence: persistenceMode === 'postgres' ? 'postgresql-drizzle-rls' : 'in-memory-demo-adapter',
       timestamp: new Date().toISOString(),
@@ -115,7 +116,7 @@ export function createApp(adapter: DataAdapter = demoDataAdapter): Express {
     return sendSuccess(res, {
       status: 'ready',
       service: 'campusverse-api',
-      phase: 'phase-4',
+      phase: 'phase-5',
       persistence: check.persistence,
       latencyMs: check.latencyMs,
       timestamp: new Date().toISOString(),
@@ -132,6 +133,7 @@ export function createApp(adapter: DataAdapter = demoDataAdapter): Express {
   apiRouter.use(createEventsRoutes(adapter));
   apiRouter.use(createFormsRoutes(adapter));
   apiRouter.use(createRegistrationsRoutes(adapter));
+  apiRouter.use(createTicketsRoutes(adapter));
   apiRouter.use(createAttendanceRoutes(adapter));
   apiRouter.use(createReportsRoutes(adapter));
   apiRouter.use(createFinanceRoutes(adapter));

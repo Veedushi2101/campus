@@ -67,18 +67,42 @@ export const AdminDashboardPage: React.FC = () => {
             {stats.upcomingEvents} / {stats.totalEvents}
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            {stats.totalRegistrations} total student registrations
+            {stats.completedEvents} completed · {stats.totalRegistrations} registrations
           </p>
         </Card>
         <Card className="p-5">
-          <p className="text-xs font-medium text-slate-500">Reported Net Balance</p>
+          <p className="text-xs font-medium text-slate-500">Institutional Net Balance</p>
           <p className="mt-2 font-mono text-2xl font-semibold text-slate-900 tabular-nums">
-            INR {stats.netBalance.toLocaleString()}
+            INR {stats.netBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            INR {stats.totalCollections.toLocaleString()} in · INR{' '}
-            {stats.totalExpenses.toLocaleString()} out
+            INR {stats.totalCollections.toLocaleString('en-IN')} in · INR{' '}
+            {stats.totalExpenses.toLocaleString('en-IN')} out
           </p>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Card className="p-5">
+          <p className="text-xs font-medium text-slate-500">Verified Check-Ins</p>
+          <p className="mt-1.5 font-mono text-xl font-semibold text-emerald-700 tabular-nums">
+            {stats.totalAttendance}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">Across all institutional events</p>
+        </Card>
+        <Card className="p-5">
+          <p className="text-xs font-medium text-slate-500">Completed Events Missing Reports</p>
+          <p className="mt-1.5 font-mono text-xl font-semibold text-amber-700 tabular-nums">
+            {stats.pendingReportsCount}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">Awaiting club report submission</p>
+        </Card>
+        <Card className="p-5">
+          <p className="text-xs font-medium text-slate-500">Reports Awaiting Admin Review</p>
+          <p className="mt-1.5 font-mono text-xl font-semibold text-violet-700 tabular-nums">
+            {stats.awaitingApprovalReportsCount}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">Submitted or under review</p>
         </Card>
       </div>
 

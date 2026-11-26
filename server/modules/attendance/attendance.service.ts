@@ -1,4 +1,8 @@
-import type {AttendanceRecord, PaginationMeta} from '../../../shared/types/domain.ts';
+import type {
+  AttendanceRecord,
+  AttendanceSummary,
+  PaginationMeta,
+} from '../../../shared/types/domain.ts';
 import type {DataAdapter} from '../../adapters/DataAdapter.ts';
 import {env} from '../../config/env.ts';
 import {BusinessRuleError, NotFoundError, ValidationError} from '../../shared/errors/AppError.ts';
@@ -24,6 +28,10 @@ export class AttendanceService {
       throw new ValidationError(
         'Manual attendance override requires a reason of at least 5 characters',
       );
+    }
+
+    if (input.method === 'qr_scan' && !input.qrToken) {
+      throw new ValidationError('QR token is required for QR scan check-in');
     }
 
     const registration = input.qrToken
@@ -57,6 +65,21 @@ export class AttendanceService {
         'REGISTRATION_WAITLISTED',
         'Waitlisted registrations cannot be checked in until promoted to confirmed',
       );
+    }
+
+    if (input.method === 'qr_scan') {
+      if (registration.ticketStatus === 'revoked') {
+        throw new BusinessRuleError(
+          'TICKET_REVOKED',
+          'This ticket has been revoked and cannot be used for check-in',
+        );
+      }
+      if (registration.ticketStatus && registration.ticketStatus !== 'released') {
+        throw new BusinessRuleError(
+          'TICKET_NOT_RELEASED',
+          'Tickets have not been released for this participant yet',
+        );
+      }
     }
 
     const student = await this.adapter.getUserById(registration.studentId);
@@ -97,10 +120,13 @@ export class AttendanceService {
     records: AttendanceRecord[];
     registeredCount: number;
     attendedCount: number;
+    summary: AttendanceSummary;
     pagination?: PaginationMeta;
   }> {
     const event = await this.adapter.getEventById(eventId);
     if (!event) throw new NotFoundError('Event not found');
+
+    const summary = await this.adapter.getAttendanceSummary(eventId);
 
     if (
       (opts?.page !== undefined || opts?.pageSize !== undefined || opts?.search !== undefined) &&
@@ -109,8 +135,9 @@ export class AttendanceService {
       const result = await this.adapter.listAttendanceForEventPaginated(eventId, opts);
       return {
         records: result.items,
-        registeredCount: event.registeredCount,
-        attendedCount: event.attendedCount,
+        registeredCount: summary.confirmedCount,
+        attendedCount: summary.attendedCount,
+        summary,
         pagination: result.pagination,
       };
     }
@@ -118,8 +145,9 @@ export class AttendanceService {
     const records = await this.adapter.listAttendanceForEvent(eventId);
     return {
       records,
-      registeredCount: event.registeredCount,
-      attendedCount: records.length,
+      registeredCount: summary.confirmedCount,
+      attendedCount: summary.attendedCount,
+      summary,
     };
   }
 

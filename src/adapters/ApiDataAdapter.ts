@@ -1,8 +1,10 @@
 import {API_PREFIX} from '../../shared/constants/permissions.ts';
 import type {
+  AdminAnalyticsResponse,
   AdminDashboardStats,
   ApiResponse,
   AttendanceRecord,
+  AttendanceSummary,
   AuditLogEntry,
   AuthSessionResponse,
   Club,
@@ -17,6 +19,9 @@ import type {
   EventFormVersion,
   EventItem,
   EventReport,
+  FinanceEntry,
+  FinanceEntryType,
+  FinanceSummaryResponse,
   FinancialLineItem,
   FinancialReport,
   FormAnswerValue,
@@ -28,6 +33,8 @@ import type {
   Registration,
   RegistrationForm,
   SystemSettings,
+  TicketRecord,
+  TicketReleaseSummary,
   UserAccount,
 } from '../../shared/types/domain.ts';
 import type {ClientDataAdapter, EventLifecycleAction} from './DataAdapter.ts';
@@ -224,6 +231,7 @@ export class ApiDataAdapter implements ClientDataAdapter {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    instagramUrl?: string;
     foundedYear?: number;
     status?: ClubStatus;
   }) {
@@ -472,9 +480,21 @@ export class ApiDataAdapter implements ClientDataAdapter {
     });
   }
 
-  getEventForm(eventId: string, version?: number) {
-    const query = version ? `?version=${version}` : '';
-    return this.request<RegistrationForm>(`/events/${encodeURIComponent(eventId)}/form${query}`);
+  getEventForm(
+    eventId: string,
+    optsOrVersion?: number | {version?: number; publishedOnly?: boolean},
+  ) {
+    const qs = new URLSearchParams();
+    if (typeof optsOrVersion === 'number') {
+      qs.set('version', String(optsOrVersion));
+    } else if (optsOrVersion) {
+      if (optsOrVersion.version) qs.set('version', String(optsOrVersion.version));
+      if (optsOrVersion.publishedOnly) qs.set('published', 'true');
+    }
+    const query = qs.toString();
+    return this.request<RegistrationForm>(
+      `/events/${encodeURIComponent(eventId)}/form${query ? `?${query}` : ''}`,
+    );
   }
 
   saveEventForm(
@@ -580,18 +600,54 @@ export class ApiDataAdapter implements ClientDataAdapter {
       records: AttendanceRecord[];
       registeredCount: number;
       attendedCount: number;
+      summary?: AttendanceSummary;
       pagination?: PaginationMeta;
     }>(`/events/${encodeURIComponent(eventId)}/attendance${query ? `?${query}` : ''}`);
+  }
+
+  releaseEventTickets(
+    eventId: string,
+    input?: {confirmParticipantCount?: number; note?: string},
+  ) {
+    return this.request<TicketReleaseSummary>(
+      `/events/${encodeURIComponent(eventId)}/tickets/release`,
+      {
+        method: 'POST',
+        body: JSON.stringify(input ?? {}),
+      },
+    );
+  }
+
+  listEventTickets(eventId: string) {
+    return this.request<TicketRecord[]>(`/events/${encodeURIComponent(eventId)}/tickets`);
+  }
+
+  listMyTickets() {
+    return this.request<TicketRecord[]>('/tickets/me');
+  }
+
+  revokeTicket(ticketId: string, reason?: string) {
+    return this.request<TicketRecord>(`/tickets/${encodeURIComponent(ticketId)}/revoke`, {
+      method: 'POST',
+      body: JSON.stringify({reason}),
+    });
   }
 
   submitEventReport(
     eventId: string,
     input: {
       outcomeSummary: string;
+      objectives?: string;
+      actualEventDate?: string;
+      participationSummary?: string;
+      outcomes?: string;
       highlights: string;
       challenges: string;
+      feedbackObservations?: string;
+      evidenceUrl?: string;
       actualAttendance: number;
       completionStatus: 'completed' | 'partial';
+      status?: 'draft' | 'submitted';
     },
   ) {
     return this.request<EventReport>(`/events/${encodeURIComponent(eventId)}/report`, {
@@ -618,6 +674,62 @@ export class ApiDataAdapter implements ClientDataAdapter {
     return this.request<FinancialReport | null>(`/events/${encodeURIComponent(eventId)}/finance-report`);
   }
 
+  getClubFinance(clubId: string) {
+    return this.request<FinanceSummaryResponse>(`/clubs/${encodeURIComponent(clubId)}/finance`);
+  }
+
+  createClubFinanceEntry(
+    clubId: string,
+    input: {
+      eventId?: string | null;
+      entryType: FinanceEntryType;
+      sourceOrCategory: string;
+      description: string;
+      amountMinorUnits?: number;
+      amount?: number;
+      transactionDate: string;
+      vendorOrRecipient?: string;
+      receiptUrl?: string;
+      notes?: string;
+    },
+  ) {
+    return this.request<FinanceEntry>(`/clubs/${encodeURIComponent(clubId)}/finance/entries`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  deleteClubFinanceEntry(clubId: string, entryId: string) {
+    return this.request<void>(
+      `/clubs/${encodeURIComponent(clubId)}/finance/entries/${encodeURIComponent(entryId)}`,
+      {method: 'DELETE'},
+    );
+  }
+
+  getEventFinance(eventId: string) {
+    return this.request<FinanceSummaryResponse>(`/events/${encodeURIComponent(eventId)}/finance`);
+  }
+
+  createEventFinanceEntry(
+    eventId: string,
+    input: {
+      entryType: FinanceEntryType;
+      sourceOrCategory: string;
+      description: string;
+      amountMinorUnits?: number;
+      amount?: number;
+      transactionDate: string;
+      vendorOrRecipient?: string;
+      receiptUrl?: string;
+      notes?: string;
+    },
+  ) {
+    return this.request<FinanceEntry>(`/events/${encodeURIComponent(eventId)}/finance/entries`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
   listNotifications() {
     return this.request<NotificationItem[]>('/notifications');
   }
@@ -635,6 +747,10 @@ export class ApiDataAdapter implements ClientDataAdapter {
 
   getAdminDashboard() {
     return this.request<AdminDashboardStats>('/admin/dashboard');
+  }
+
+  getAdminAnalytics() {
+    return this.request<AdminAnalyticsResponse>('/admin/analytics');
   }
 
   listAdminClubs() {
@@ -667,13 +783,49 @@ export class ApiDataAdapter implements ClientDataAdapter {
     return this.request<EventReport[]>('/admin/reports');
   }
 
+  reviewAdminReport(
+    reportId: string,
+    input: {
+      status: 'under_review' | 'changes_requested' | 'approved' | 'rejected';
+      reviewNotes: string;
+    },
+  ) {
+    return this.request<EventReport>(`/admin/reports/${encodeURIComponent(reportId)}/review`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
   getAdminFinance() {
     return this.request<{
       reports: FinancialReport[];
       totalCollections: number;
       totalExpenses: number;
       netBalance: number;
+      ledgerSummary?: FinanceSummaryResponse;
     }>('/admin/finance');
+  }
+
+  async downloadAdminCsv(kind: 'reports' | 'finance'): Promise<{blob: Blob; filename: string}> {
+    const headers = new Headers();
+    if (this.authToken) {
+      headers.set('Authorization', `Bearer ${this.authToken}`);
+    }
+    const res = await fetch(`${API_PREFIX}/admin/${kind}/export`, {headers});
+    if (!res.ok) {
+      const json = (await res.json().catch(() => null)) as ApiResponse<unknown> | null;
+      const err = json && !json.success ? json.error : null;
+      throw new ApiClientError(
+        res.status,
+        err?.code || 'EXPORT_FAILED',
+        err?.message || `CSV export failed (${res.status})`,
+      );
+    }
+    const cd = res.headers.get('content-disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/i);
+    const filename = match?.[1] || `admin-${kind}.csv`;
+    const blob = await res.blob();
+    return {blob, filename};
   }
 
   listAdminAuditLogs() {

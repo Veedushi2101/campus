@@ -64,6 +64,7 @@ export class ClubsService {
       description: string;
       meetingSchedule: string;
       contactEmail: string;
+      instagramUrl?: string;
       foundedYear?: number;
       status?: ClubStatus;
     },
@@ -92,6 +93,7 @@ export class ClubsService {
   ): Promise<Club> {
     const updated = await this.adapter.updateClub(clubId, updates);
     if (!updated) throw new NotFoundError('Club not found');
+    const changedKeys = Object.keys(updates).join(', ');
     await this.adapter.appendAuditLog({
       actorId: actor.id,
       actorName: actor.name,
@@ -100,7 +102,9 @@ export class ClubsService {
       targetType: 'club',
       targetId: updated.id,
       targetLabel: updated.name,
-      details: 'Updated club profile metadata and schedule.',
+      details: changedKeys
+        ? `Updated club profile fields (${changedKeys}).`
+        : 'Updated club profile metadata and schedule.',
     });
     return updated;
   }

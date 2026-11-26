@@ -1,6 +1,8 @@
 import type {
+  AdminAnalyticsResponse,
   AdminDashboardStats,
   AttendanceRecord,
+  AttendanceSummary,
   AuditLogEntry,
   AuthSessionResponse,
   Club,
@@ -15,6 +17,9 @@ import type {
   EventFormVersion,
   EventItem,
   EventReport,
+  FinanceEntry,
+  FinanceEntryType,
+  FinanceSummaryResponse,
   FinancialLineItem,
   FinancialReport,
   FormAnswerValue,
@@ -26,6 +31,8 @@ import type {
   Registration,
   RegistrationForm,
   SystemSettings,
+  TicketRecord,
+  TicketReleaseSummary,
   UserAccount,
 } from '../../shared/types/domain.ts';
 
@@ -81,6 +88,7 @@ export interface ClientDataAdapter {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    instagramUrl?: string;
     foundedYear?: number;
     status?: ClubStatus;
   }): Promise<Club>;
@@ -199,7 +207,10 @@ export interface ClientDataAdapter {
   publishEvent(eventId: string): Promise<EventItem>;
   transitionEventLifecycle(eventId: string, action: EventLifecycleAction): Promise<EventItem>;
 
-  getEventForm(eventId: string, version?: number): Promise<RegistrationForm>;
+  getEventForm(
+    eventId: string,
+    optsOrVersion?: number | {version?: number; publishedOnly?: boolean},
+  ): Promise<RegistrationForm>;
   saveEventForm(
     eventId: string,
     fields: FormField[],
@@ -245,18 +256,35 @@ export interface ClientDataAdapter {
     records: AttendanceRecord[];
     registeredCount: number;
     attendedCount: number;
+    summary?: AttendanceSummary;
     pagination?: PaginationMeta;
   }>;
+
+  // Tickets
+  releaseEventTickets(
+    eventId: string,
+    input?: {confirmParticipantCount?: number; note?: string},
+  ): Promise<TicketReleaseSummary>;
+  listEventTickets(eventId: string): Promise<TicketRecord[]>;
+  listMyTickets(): Promise<TicketRecord[]>;
+  revokeTicket(ticketId: string, reason?: string): Promise<TicketRecord>;
 
   // Reports & Finance
   submitEventReport(
     eventId: string,
     input: {
       outcomeSummary: string;
+      objectives?: string;
+      actualEventDate?: string;
+      participationSummary?: string;
+      outcomes?: string;
       highlights: string;
       challenges: string;
+      feedbackObservations?: string;
+      evidenceUrl?: string;
       actualAttendance: number;
       completionStatus: 'completed' | 'partial';
+      status?: 'draft' | 'submitted';
     },
   ): Promise<EventReport>;
   getEventReport(eventId: string): Promise<EventReport | null>;
@@ -266,6 +294,38 @@ export interface ClientDataAdapter {
     input: {lineItems: FinancialLineItem[]; notes: string},
   ): Promise<FinancialReport>;
   getFinancialReport(eventId: string): Promise<FinancialReport | null>;
+  getClubFinance(clubId: string): Promise<FinanceSummaryResponse>;
+  createClubFinanceEntry(
+    clubId: string,
+    input: {
+      eventId?: string | null;
+      entryType: FinanceEntryType;
+      sourceOrCategory: string;
+      description: string;
+      amountMinorUnits?: number;
+      amount?: number;
+      transactionDate: string;
+      vendorOrRecipient?: string;
+      receiptUrl?: string;
+      notes?: string;
+    },
+  ): Promise<FinanceEntry>;
+  deleteClubFinanceEntry(clubId: string, entryId: string): Promise<void>;
+  getEventFinance(eventId: string): Promise<FinanceSummaryResponse>;
+  createEventFinanceEntry(
+    eventId: string,
+    input: {
+      entryType: FinanceEntryType;
+      sourceOrCategory: string;
+      description: string;
+      amountMinorUnits?: number;
+      amount?: number;
+      transactionDate: string;
+      vendorOrRecipient?: string;
+      receiptUrl?: string;
+      notes?: string;
+    },
+  ): Promise<FinanceEntry>;
 
   // Notifications
   listNotifications(): Promise<NotificationItem[]>;
@@ -274,18 +334,28 @@ export interface ClientDataAdapter {
 
   // Super Admin
   getAdminDashboard(): Promise<AdminDashboardStats>;
+  getAdminAnalytics(): Promise<AdminAnalyticsResponse>;
   listAdminClubs(): Promise<Club[]>;
   listAdminMemberships(): Promise<ClubMembership[]>;
   updateClubStatus(clubId: string, status: ClubStatus, reason?: string): Promise<Club>;
   listAdminUsers(): Promise<UserAccount[]>;
   updateUserStatus(userId: string, status: 'active' | 'suspended', reason?: string): Promise<UserAccount>;
   listAdminReports(): Promise<EventReport[]>;
+  reviewAdminReport(
+    reportId: string,
+    input: {
+      status: 'under_review' | 'changes_requested' | 'approved' | 'rejected';
+      reviewNotes: string;
+    },
+  ): Promise<EventReport>;
   getAdminFinance(): Promise<{
     reports: FinancialReport[];
     totalCollections: number;
     totalExpenses: number;
     netBalance: number;
+    ledgerSummary?: FinanceSummaryResponse;
   }>;
+  downloadAdminCsv(kind: 'reports' | 'finance'): Promise<{blob: Blob; filename: string}>;
   listAdminAuditLogs(): Promise<AuditLogEntry[]>;
   getAdminSettings(): Promise<SystemSettings>;
   updateAdminSettings(updates: Partial<SystemSettings>): Promise<SystemSettings>;

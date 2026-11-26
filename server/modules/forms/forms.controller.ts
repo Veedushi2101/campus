@@ -1,4 +1,5 @@
 import type {NextFunction, Request, Response} from 'express';
+import {hasClubPermission} from '../../middleware/authorization.ts';
 import {sendSuccess} from '../../shared/responses/apiResponse.ts';
 import type {FormsService} from './forms.service.ts';
 
@@ -13,8 +14,20 @@ export class FormsController {
         sendSuccess(res, snapshot);
         return;
       }
-      const form = await this.service.getForm(req.params.eventId);
-      sendSuccess(res, form);
+
+      const publishedOnly =
+        req.query.published === 'true' || req.query.publishedOnly === 'true';
+      if (!publishedOnly && req.auth?.user) {
+        const event = await this.service.getEventById(req.params.eventId);
+        if (event && hasClubPermission(req, event.clubId, 'MANAGE_FORMS')) {
+          const draftForm = await this.service.getForm(req.params.eventId);
+          sendSuccess(res, draftForm);
+          return;
+        }
+      }
+
+      const publishedForm = await this.service.getLatestPublishedForm(req.params.eventId);
+      sendSuccess(res, publishedForm);
     } catch (error) {
       next(error);
     }

@@ -36,10 +36,15 @@ export const EventDetailsPage: React.FC = () => {
     enabled: Boolean(eventId),
   });
 
-  const {data: form} = useQuery({
-    queryKey: ['event-form', eventId],
-    queryFn: () => apiClient.getEventForm(eventId),
+  const {
+    data: form,
+    error: formQueryError,
+    isLoading: formLoading,
+  } = useQuery({
+    queryKey: ['event-form', eventId, 'published'],
+    queryFn: () => apiClient.getEventForm(eventId, {publishedOnly: true}),
     enabled: Boolean(eventId),
+    retry: false,
   });
 
   const {data: myRegistrations = []} = useQuery({
@@ -80,8 +85,13 @@ export const EventDetailsPage: React.FC = () => {
           'Added to FIFO waitlist',
           `You are #${reg.waitlistPosition ?? ''} in queue. If a seat opens, you will be automatically promoted.`,
         );
-      } else {
+      } else if (reg.ticketStatus === 'released' && reg.qrToken) {
         toast.success('Registration confirmed', 'Your opaque QR entry pass is ready.');
+      } else {
+        toast.success(
+          'Registration confirmed',
+          'Your registration is confirmed. Your ticket will be available once the club releases tickets.',
+        );
       }
     },
     onError: (err) => {
@@ -258,18 +268,49 @@ export const EventDetailsPage: React.FC = () => {
               <p className="mt-1 text-xs text-slate-600">
                 {existingRegistration.status === 'waitlisted'
                   ? `Waitlist Queue Position #${existingRegistration.waitlistPosition ?? '—'}. You will be automatically promoted if a confirmed seat opens.`
-                  : `Present this single-use opaque QR pass at ${event.venue}. No personal PII is encoded inside the token.`}
+                  : existingRegistration.ticketStatus === 'released' && existingRegistration.qrToken
+                    ? `Present this single-use opaque QR pass at ${event.venue}. No personal PII is encoded inside the token.`
+                    : existingRegistration.ticketStatus === 'revoked'
+                      ? 'Your event ticket has been revoked by club organizers.'
+                      : 'Your registration is confirmed. Your QR pass will appear here once club organizers release tickets.'}
               </p>
 
-              <div className="mt-5 inline-flex rounded-xl border border-slate-200 bg-white p-4">
-                <QRCodeSVG value={existingRegistration.qrToken} size={160} level="M" />
-              </div>
+              {existingRegistration.ticketStatus === 'released' && existingRegistration.qrToken ? (
+                <>
+                  <div className="mt-5 inline-flex rounded-xl border border-slate-200 bg-white p-4">
+                    <QRCodeSVG value={existingRegistration.qrToken} size={160} level="M" />
+                  </div>
+                  {existingRegistration.ticketCode && (
+                    <p className="mt-3 font-mono text-xs font-semibold text-slate-600">
+                      Ticket Code: {existingRegistration.ticketCode}
+                    </p>
+                  )}
+                  <p className="mt-1 font-mono text-sm font-semibold text-slate-900">
+                    {existingRegistration.qrToken}
+                  </p>
+                </>
+              ) : existingRegistration.ticketStatus === 'revoked' ? (
+                <div className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-800">
+                  Ticket Revoked — contact {event.clubName} organizers if you believe this is an error.
+                </div>
+              ) : (
+                <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+                  <p className="font-semibold">Ticket Pending Release</p>
+                  <p className="mt-1 text-amber-800">
+                    No QR pass has been issued yet. Check back or watch notifications once tickets are released.
+                  </p>
+                </div>
+              )}
 
-              <p className="mt-3 font-mono text-sm font-semibold text-slate-900">
-                {existingRegistration.qrToken}
-              </p>
-              <div className="mt-2 flex flex-wrap items-center justify-center gap-3">
-                <StatusLabel status={existingRegistration.status} />
+              <div className="mt-3 flex flex-wrap items-center justify-center gap-3">
+                <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                  <span>Registration:</span>
+                  <StatusLabel status={existingRegistration.status} />
+                </div>
+                <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                  <span>Ticket:</span>
+                  <StatusLabel status={existingRegistration.ticketStatus || 'not_released'} />
+                </div>
                 {existingRegistration.qrUsedAt || existingRegistration.status === 'attended' ? (
                   <span className="text-xs font-medium text-emerald-700">
                     Checked in{' '}
@@ -277,7 +318,8 @@ export const EventDetailsPage: React.FC = () => {
                       ? new Date(existingRegistration.qrUsedAt).toLocaleString()
                       : ''}
                   </span>
-                ) : existingRegistration.status === 'confirmed' ? (
+                ) : existingRegistration.ticketStatus === 'released' &&
+                  existingRegistration.status === 'confirmed' ? (
                   <span className="text-xs text-slate-500">Awaiting gate scan</span>
                 ) : null}
               </div>
@@ -308,6 +350,20 @@ export const EventDetailsPage: React.FC = () => {
                   : pastDeadline
                     ? `The registration deadline (${new Date(event.registrationDeadline).toLocaleString()}) has passed.`
                     : `This event is currently in ${event.status.replace(/_/g, ' ')} state.`}
+              </p>
+            </div>
+          ) : formLoading ? (
+            <LoadingSkeleton rows={3} />
+          ) : formQueryError || !form ? (
+            <div role="alert" className="py-8 text-center">
+              <AlertCircle className="mx-auto h-8 w-8 text-amber-600" />
+              <h2 className="mt-3 font-display text-base font-semibold text-slate-900">
+                Registration Form Not Published Yet
+              </h2>
+              <p className="mt-1 text-xs text-slate-600">
+                {formQueryError instanceof Error
+                  ? formQueryError.message
+                  : 'Club organizers have not published the registration form for this event yet.'}
               </p>
             </div>
           ) : (
@@ -473,7 +529,7 @@ export const EventDetailsPage: React.FC = () => {
               ))}
 
               <Button type="submit" loading={registerMutation.isPending} className="w-full">
-                {isFull ? 'Join FIFO Waitlist' : 'Confirm Registration & Issue QR Pass'}
+                {isFull ? 'Join FIFO Waitlist' : 'Confirm Registration'}
               </Button>
             </form>
           )}

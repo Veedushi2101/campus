@@ -4,21 +4,32 @@ import {
   isClubOfficerRole,
 } from '../../shared/constants/permissions.ts';
 import type {
+  AdminAnalyticsResponse,
   AdminDashboardStats,
   AttendanceRecord,
+  AttendanceSummary,
   AuditLogEntry,
   Club,
   ClubDetail,
   ClubFollow,
   ClubInvitation,
   ClubMembership,
+  ClubOverviewItem,
   ClubRole,
   ClubStatus,
   CoreMemberPermission,
+  EventAnalyticsItem,
   EventFormVersion,
   EventItem,
   EventReport,
+  EventReportHistoryEntry,
+  EventReportStatus,
   EventStatus,
+  FinanceClubSummary,
+  FinanceEntry,
+  FinanceEntryType,
+  FinanceEventSummary,
+  FinanceSummaryResponse,
   FinancialReport,
   FormAnswerValue,
   FormField,
@@ -28,6 +39,9 @@ import type {
   Registration,
   RegistrationForm,
   SystemSettings,
+  TicketRecord,
+  TicketReleaseSummary,
+  TicketStatus,
   UserAccount,
 } from '../../shared/types/domain.ts';
 import {MAX_FOLLOWED_CLUBS} from '../config/constants.ts';
@@ -43,7 +57,12 @@ import {
 import {
   generateInvitationToken,
   generateOpaqueQrToken,
+  generateTicketCode,
   hashInvitationToken,
+  minorUnitsToRupees,
+  rupeesToMinorUnits,
+  sealTicketToken,
+  unsealTicketToken,
 } from '../shared/utils/crypto.ts';
 import type {DataAdapter, ResolvedAuthContext} from './DataAdapter.ts';
 
@@ -60,6 +79,11 @@ interface StoredInvitation extends ClubInvitation {
   normalizedEmail: string;
 }
 
+interface StoredTicket extends TicketRecord {
+  tokenHash: string | null;
+  sealedToken: string | null;
+}
+
 export class DemoDataAdapter implements DataAdapter {
   private users: UserAccount[] = [];
   private clubs: Club[] = [];
@@ -70,16 +94,18 @@ export class DemoDataAdapter implements DataAdapter {
   private forms: Map<string, RegistrationForm> = new Map();
   private formVersions: EventFormVersion[] = [];
   private registrations: Registration[] = [];
+  private tickets: StoredTicket[] = [];
   private attendance: AttendanceRecord[] = [];
   private eventReports: EventReport[] = [];
   private financialReports: FinancialReport[] = [];
+  private financeEntries: FinanceEntry[] = [];
   private notifications: NotificationItem[] = [];
   private auditLogs: AuditLogEntry[] = [];
   private settings: SystemSettings = {
     maxClubsPerStudent: MAX_FOLLOWED_CLUBS,
     requireClubApproval: true,
     allowStudentEventFeedback: true,
-    phaseLabel: 'Phase 4 — Development Sandbox (In-Memory Demo Adapter)',
+    phaseLabel: 'Phase 5 — Development Sandbox (In-Memory Demo Adapter)',
     persistenceMode: 'in_memory_demo',
   };
 
@@ -97,9 +123,11 @@ export class DemoDataAdapter implements DataAdapter {
     this.forms.clear();
     this.formVersions = [];
     this.registrations = [];
+    this.tickets = [];
     this.attendance = [];
     this.eventReports = [];
     this.financialReports = [];
+    this.financeEntries = [];
     this.notifications = [];
     this.auditLogs = [];
     this.seed();
@@ -204,6 +232,7 @@ export class DemoDataAdapter implements DataAdapter {
         foundedYear: 2018,
         meetingSchedule: 'Wednesdays & Saturdays · 17:30 · Innovation Hangar B2',
         contactEmail: 'robotics@campusverse.edu',
+        instagramUrl: 'https://www.instagram.com/apexrobotics.campusverse/',
         createdAt: '2026-08-01T09:00:00.000Z',
       },
       {
@@ -710,7 +739,10 @@ export class DemoDataAdapter implements DataAdapter {
           'fld-code-conduct': true,
         },
         status: 'confirmed',
-        qrToken: 'CV-QR-8F92A1C4',
+        ticketStatus: 'released',
+        ticketCode: 'TCK-ROVER-101',
+        ticketReleasedAt: '2026-11-12T10:00:00.000Z',
+        qrToken: 'CV-TCK-8F92A1C4',
         qrUsedAt: null,
         createdAt: '2026-11-12T09:30:00.000Z',
       },
@@ -732,7 +764,10 @@ export class DemoDataAdapter implements DataAdapter {
           'fld-code-conduct': true,
         },
         status: 'confirmed',
-        qrToken: 'CV-QR-3B71D9E0',
+        ticketStatus: 'not_released',
+        ticketCode: 'TCK-ROVER-102',
+        ticketReleasedAt: null,
+        qrToken: '',
         qrUsedAt: null,
         createdAt: '2026-11-13T11:15:00.000Z',
       },
@@ -753,7 +788,10 @@ export class DemoDataAdapter implements DataAdapter {
           'fld-code-conduct': true,
         },
         status: 'attended',
-        qrToken: 'CV-QR-6C44E2B8',
+        ticketStatus: 'released',
+        ticketCode: 'TCK-PCB-103',
+        ticketReleasedAt: '2026-10-25T10:00:00.000Z',
+        qrToken: 'CV-TCK-6C44E2B8',
         qrUsedAt: '2026-10-28T14:05:00.000Z',
         createdAt: '2026-10-20T10:00:00.000Z',
       },
@@ -774,7 +812,10 @@ export class DemoDataAdapter implements DataAdapter {
           'fld-code-conduct': true,
         },
         status: 'confirmed',
-        qrToken: 'CV-QR-91AA77D2',
+        ticketStatus: 'not_released',
+        ticketCode: 'TCK-DES-104',
+        ticketReleasedAt: null,
+        qrToken: '',
         qrUsedAt: null,
         createdAt: '2026-11-14T15:40:00.000Z',
       },
@@ -795,11 +836,37 @@ export class DemoDataAdapter implements DataAdapter {
           'fld-code-conduct': true,
         },
         status: 'confirmed',
-        qrToken: 'CV-QR-55F0C8A1',
+        ticketStatus: 'released',
+        ticketCode: 'TCK-MUS-105',
+        ticketReleasedAt: '2026-11-15T17:00:00.000Z',
+        qrToken: 'CV-TCK-55F0C8A1',
         qrUsedAt: null,
         createdAt: '2026-11-15T16:10:00.000Z',
       },
     ];
+
+    this.tickets = this.registrations.map((reg) => {
+      const isReleased = reg.ticketStatus === 'released' && Boolean(reg.qrToken);
+      return {
+        id: `tck-${reg.id}`,
+        registrationId: reg.id,
+        eventId: reg.eventId,
+        userId: reg.studentId,
+        studentName: reg.studentName,
+        studentEmail: reg.studentEmail,
+        registrationStatus: reg.status,
+        ticketCode: reg.ticketCode || generateTicketCode(),
+        status: reg.ticketStatus || 'not_released',
+        tokenHash: isReleased ? hashInvitationToken(reg.qrToken) : null,
+        sealedToken: isReleased ? sealTicketToken(reg.qrToken) : null,
+        releasedBy: isReleased ? 'usr-club-admin-1' : null,
+        releasedAt: reg.ticketReleasedAt ?? null,
+        revokedBy: null,
+        revokedAt: null,
+        createdAt: reg.createdAt,
+        updatedAt: reg.ticketReleasedAt || reg.createdAt,
+      };
+    });
 
     this.attendance = [
       {
@@ -809,7 +876,7 @@ export class DemoDataAdapter implements DataAdapter {
         studentId: 'usr-student-1',
         studentName: 'Aarav Mehta',
         studentCode: 'STU-2024-0412',
-        qrToken: 'CV-QR-6C44E2B8',
+        qrToken: 'TCK-PCB-103',
         method: 'qr_scan',
         checkedInBy: 'Rohan Verma',
         checkedInAt: '2026-10-28T14:05:00.000Z',
@@ -827,12 +894,43 @@ export class DemoDataAdapter implements DataAdapter {
         submittedByName: 'Priya Nair',
         outcomeSummary:
           'Completed full 4-layer schematic to Gerber fabrication walkthrough with student hardware teams; 12 boards exported cleanly for panelization.',
+        objectives: 'Train student teams to design manufacturing-ready 4-layer PCBs in KiCad 8.',
+        actualEventDate: '2026-10-28',
+        participationSummary: '38 active student attendees across Robotics and EE labs.',
+        outcomes: '12 verified Gerber packages ready for fabrication batch.',
         highlights: 'Zero DRC errors across final student boards; strong cross-year mentorship.',
         challenges: 'Projector adapter needed quick swap before session start.',
+        feedbackObservations: 'Participants requested a follow-up SMD reflow workshop.',
+        evidenceUrl: 'https://campusverse.edu/evidence/pcb-lab-2026',
         actualAttendance: 38,
         registeredTotal: 42,
         completionStatus: 'completed',
+        status: 'approved',
+        reviewedBy: 'usr-super-admin',
+        reviewedByName: 'Dr. Elena Vance',
+        reviewedAt: '2026-10-30T09:15:00.000Z',
+        reviewNotes: 'Approved. Strong hands-on hardware outcomes.',
+        history: [
+          {
+            action: 'SUBMITTED',
+            status: 'submitted',
+            actorId: 'usr-club-admin-1',
+            actorName: 'Priya Nair',
+            actorRole: 'Club President',
+            timestamp: '2026-10-29T11:20:00.000Z',
+          },
+          {
+            action: 'REVIEW_APPROVED',
+            status: 'approved',
+            actorId: 'usr-super-admin',
+            actorName: 'Dr. Elena Vance',
+            actorRole: 'Super Admin',
+            notes: 'Approved. Strong hands-on hardware outcomes.',
+            timestamp: '2026-10-30T09:15:00.000Z',
+          },
+        ],
         submittedAt: '2026-10-29T11:20:00.000Z',
+        updatedAt: '2026-10-30T09:15:00.000Z',
       },
     ];
 
@@ -848,6 +946,9 @@ export class DemoDataAdapter implements DataAdapter {
         totalCollections: 12000,
         totalExpenses: 9450,
         netBalance: 2550,
+        totalCollectionsMinorUnits: 1200000,
+        totalExpensesMinorUnits: 945000,
+        netBalanceMinorUnits: 255000,
         lineItems: [
           {
             id: 'li-1',
@@ -878,12 +979,55 @@ export class DemoDataAdapter implements DataAdapter {
       },
     ];
 
+    this.financeEntries = [
+      {
+        id: 'fin-ent-1',
+        clubId: 'club-robotics',
+        clubName: 'Apex Robotics Lab',
+        eventId: 'evt-rover-sprint',
+        eventTitle: 'Autonomous Rover Buildathon 2026',
+        entryType: 'income',
+        sourceOrCategory: 'Alumni Hardware Sponsorship',
+        description: 'LiDAR & Chassis Component Sponsorship',
+        amountMinorUnits: 1500000,
+        amount: 15000,
+        transactionDate: '2026-11-10T00:00:00.000Z',
+        vendorOrRecipient: 'Apex Alumni Guild',
+        receiptUrl: '',
+        notes: 'Dedicated rover buildathon parts pool',
+        createdBy: 'usr-club-admin-1',
+        createdByName: 'Priya Nair',
+        createdAt: '2026-11-10T10:00:00.000Z',
+        updatedAt: '2026-11-10T10:00:00.000Z',
+      },
+      {
+        id: 'fin-ent-2',
+        clubId: 'club-robotics',
+        clubName: 'Apex Robotics Lab',
+        eventId: 'evt-rover-sprint',
+        eventTitle: 'Autonomous Rover Buildathon 2026',
+        entryType: 'expense',
+        sourceOrCategory: 'Hardware Equipment',
+        description: '10 Aluminum Chassis Kits & Motor Drivers',
+        amountMinorUnits: 850000,
+        amount: 8500,
+        transactionDate: '2026-11-12T00:00:00.000Z',
+        vendorOrRecipient: 'RoboCraft Components Pvt Ltd',
+        receiptUrl: '',
+        notes: 'Invoice #RC-2026-44',
+        createdBy: 'usr-club-admin-1',
+        createdByName: 'Priya Nair',
+        createdAt: '2026-11-12T12:00:00.000Z',
+        updatedAt: '2026-11-12T12:00:00.000Z',
+      },
+    ];
+
     this.notifications = [
       {
         id: 'not-1',
         userId: 'usr-student-1',
-        title: 'Registration Confirmed: Autonomous Rover Buildathon 2026',
-        message: 'Your QR entry pass CV-QR-8F92A1C4 is ready in My Registrations.',
+        title: 'Ticket Released: Autonomous Rover Buildathon 2026',
+        message: 'Your QR pass (TCK-ROVER-101) is ready in My Registrations.',
         category: 'registration',
         read: false,
         link: '/app/student/registrations',
@@ -1259,6 +1403,7 @@ export class DemoDataAdapter implements DataAdapter {
     description: string;
     meetingSchedule: string;
     contactEmail: string;
+    instagramUrl?: string;
     foundedYear?: number;
     status?: ClubStatus;
     createdByUserId?: string;
@@ -1283,6 +1428,7 @@ export class DemoDataAdapter implements DataAdapter {
       foundedYear: input.foundedYear || new Date().getFullYear(),
       meetingSchedule: input.meetingSchedule,
       contactEmail: input.contactEmail,
+      instagramUrl: input.instagramUrl || '',
       createdAt: new Date().toISOString(),
     };
     this.clubs.push(club);
@@ -2075,12 +2221,6 @@ export class DemoDataAdapter implements DataAdapter {
         'Cancelled events cannot be reopened',
       );
     }
-    if (targetStatus === 'published' || targetStatus === 'registration_open') {
-      const existingForm = this.forms.get(eventId);
-      if (!existingForm || !existingForm.publishedVersion) {
-        await this.publishRegistrationForm(eventId);
-      }
-    }
     ev.status = targetStatus;
     ev.updatedAt = new Date().toISOString();
     return {...ev};
@@ -2224,19 +2364,53 @@ export class DemoDataAdapter implements DataAdapter {
 
     const latestVersion = await this.getPublishedFormVersion(ev.id);
     const status = ev.registeredCount >= ev.capacity ? 'waitlisted' : 'confirmed';
+    const regRef = `REG-${generateOpaqueQrToken().slice(7, 19)}`;
 
     if (existing && existing.status === 'cancelled') {
       existing.status = status;
       existing.answers = input.answers;
-      existing.qrToken = input.qrToken;
+      existing.qrToken = '';
+      existing.ticketStatus = 'not_released';
+      existing.ticketReleasedAt = null;
       existing.qrUsedAt = null;
       existing.formVersion = input.formVersion ?? latestVersion?.version ?? 1;
       existing.formVersionId = input.formVersionId ?? latestVersion?.id ?? null;
       existing.createdAt = now.toISOString();
       if (status === 'confirmed') ev.registeredCount += 1;
-      return {...existing};
+      const existingTicket = this.tickets.find((t) => t.registrationId === existing.id);
+      const ticketCode = existingTicket?.ticketCode || generateTicketCode();
+      if (existingTicket) {
+        existingTicket.status = 'not_released';
+        existingTicket.tokenHash = null;
+        existingTicket.sealedToken = null;
+        existingTicket.releasedAt = null;
+        existingTicket.revokedAt = null;
+        existingTicket.updatedAt = now.toISOString();
+      } else {
+        this.tickets.push({
+          id: `tck-${existing.id}`,
+          registrationId: existing.id,
+          eventId: ev.id,
+          userId: input.studentId,
+          studentName: input.studentName,
+          studentEmail: input.studentEmail,
+          registrationStatus: status,
+          ticketCode,
+          status: 'not_released',
+          tokenHash: null,
+          sealedToken: null,
+          releasedBy: null,
+          releasedAt: null,
+          revokedBy: null,
+          revokedAt: null,
+          createdAt: now.toISOString(),
+          updatedAt: now.toISOString(),
+        });
+      }
+      return {...existing, ticketCode, ticketStatus: 'not_released', qrToken: ''};
     }
 
+    const ticketCode = generateTicketCode();
     const reg: Registration = {
       id: `reg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       eventId: ev.id,
@@ -2252,18 +2426,41 @@ export class DemoDataAdapter implements DataAdapter {
       formVersionId: input.formVersionId ?? latestVersion?.id ?? null,
       answers: input.answers,
       status,
+      ticketStatus: 'not_released',
+      ticketCode,
+      ticketReleasedAt: null,
       attendanceStatus: 'not_checked_in',
       waitlistPosition:
         status === 'waitlisted'
           ? this.registrations.filter((r) => r.eventId === ev.id && r.status === 'waitlisted')
               .length + 1
           : null,
-      qrToken: input.qrToken,
+      qrToken: '',
       qrUsedAt: null,
       createdAt: now.toISOString(),
     };
     this.registrations.push(reg);
+    this.tickets.push({
+      id: `tck-${reg.id}`,
+      registrationId: reg.id,
+      eventId: ev.id,
+      userId: input.studentId,
+      studentName: input.studentName,
+      studentEmail: input.studentEmail,
+      registrationStatus: status,
+      ticketCode,
+      status: 'not_released',
+      tokenHash: null,
+      sealedToken: null,
+      releasedBy: null,
+      releasedAt: null,
+      revokedBy: null,
+      revokedAt: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    });
     if (status === 'confirmed') ev.registeredCount += 1;
+    void regRef;
     return {...reg};
   }
 
@@ -2286,8 +2483,20 @@ export class DemoDataAdapter implements DataAdapter {
     }
 
     const wasConfirmed = reg.status === 'confirmed';
+    const nowIso = new Date().toISOString();
     reg.status = 'cancelled';
-    reg.qrToken = `REVOKED-${generateOpaqueQrToken()}`;
+    reg.ticketStatus = 'revoked';
+    reg.qrToken = '';
+
+    const ticket = this.tickets.find((t) => t.registrationId === reg.id);
+    if (ticket) {
+      ticket.status = 'revoked';
+      ticket.tokenHash = null;
+      ticket.sealedToken = null;
+      ticket.revokedBy = studentId;
+      ticket.revokedAt = nowIso;
+      ticket.updatedAt = nowIso;
+    }
 
     const ev = this.events.find((e) => e.id === eventId);
     if (wasConfirmed && ev && ev.registeredCount > 0) {
@@ -2310,7 +2519,7 @@ export class DemoDataAdapter implements DataAdapter {
         await this.createNotification({
           userId: nextWaitlisted.studentId,
           title: 'Waitlist Seat Confirmed',
-          message: `A seat opened up for ${ev.title}. Your registration and QR pass are now active.`,
+          message: `A seat opened up for ${ev.title}. Your registration is confirmed and your ticket will be available once the club releases tickets.`,
           category: 'registration',
           link: '/app/student/registrations',
         });
@@ -2339,17 +2548,24 @@ export class DemoDataAdapter implements DataAdapter {
           return (
             r.studentName.toLowerCase().includes(q) ||
             r.studentEmail.toLowerCase().includes(q) ||
-            r.qrToken.toLowerCase().includes(q)
+            (r.ticketCode || '').toLowerCase().includes(q)
           );
         }
         return true;
       })
-      .map((r) => ({
-        ...r,
-        attendanceStatus: (r.status === 'attended' || Boolean(r.qrUsedAt)
-          ? 'present'
-          : 'not_checked_in') as Registration['attendanceStatus'],
-      }));
+      .map((r) => {
+        const ticket = this.tickets.find((t) => t.registrationId === r.id);
+        return {
+          ...r,
+          ticketStatus: ticket?.status ?? r.ticketStatus ?? 'not_released',
+          ticketCode: ticket?.ticketCode ?? r.ticketCode,
+          ticketReleasedAt: ticket?.releasedAt ?? r.ticketReleasedAt ?? null,
+          qrToken: '',
+          attendanceStatus: (r.status === 'attended' || Boolean(r.qrUsedAt)
+            ? 'present'
+            : 'not_checked_in') as Registration['attendanceStatus'],
+        };
+      });
 
     const total = filtered.length;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -2375,8 +2591,16 @@ export class DemoDataAdapter implements DataAdapter {
       .filter((r) => r.studentId === studentId)
       .map((r) => {
         const ev = this.events.find((e) => e.id === r.eventId);
+        const ticket = this.tickets.find((t) => t.registrationId === r.id);
+        const ticketStatus: TicketStatus = ticket?.status ?? r.ticketStatus ?? 'not_released';
+        const unsealed =
+          ticketStatus === 'released' ? unsealTicketToken(ticket?.sealedToken) || r.qrToken : '';
         return {
           ...r,
+          ticketStatus,
+          ticketCode: ticket?.ticketCode ?? r.ticketCode,
+          ticketReleasedAt: ticket?.releasedAt ?? r.ticketReleasedAt ?? null,
+          qrToken: unsealed,
           attendanceStatus: (r.status === 'attended' || Boolean(r.qrUsedAt)
             ? 'present'
             : 'not_checked_in') as Registration['attendanceStatus'],
@@ -2391,15 +2615,267 @@ export class DemoDataAdapter implements DataAdapter {
 
   async getRegistrationById(registrationId: string): Promise<Registration | null> {
     const reg = this.registrations.find((r) => r.id === registrationId);
-    return reg ? {...reg} : null;
+    if (!reg) return null;
+    const ticket = this.tickets.find((t) => t.registrationId === reg.id);
+    const ticketStatus: TicketStatus = ticket?.status ?? reg.ticketStatus ?? 'not_released';
+    return {
+      ...reg,
+      ticketStatus,
+      ticketCode: ticket?.ticketCode ?? reg.ticketCode,
+      ticketReleasedAt: ticket?.releasedAt ?? reg.ticketReleasedAt ?? null,
+      qrToken:
+        ticketStatus === 'released' ? unsealTicketToken(ticket?.sealedToken) || reg.qrToken : '',
+    };
   }
 
   async getRegistrationByQrToken(eventId: string, qrToken: string): Promise<Registration | null> {
-    const normalized = qrToken.trim().toUpperCase();
-    const reg = this.registrations.find(
-      (r) => r.eventId === eventId && r.qrToken.toUpperCase() === normalized,
+    const raw = qrToken.trim();
+    if (!raw) return null;
+    const tokenHash = hashInvitationToken(raw);
+    const ticket = this.tickets.find((t) => t.tokenHash === tokenHash);
+    if (ticket) {
+      if (ticket.eventId !== eventId) {
+        throw new BusinessRuleError(
+          'WRONG_EVENT_TICKET',
+          'This ticket belongs to a different event and cannot be checked in here',
+        );
+      }
+      if (ticket.status === 'revoked') {
+        throw new BusinessRuleError(
+          'TICKET_REVOKED',
+          'This ticket has been revoked and cannot be used for check-in',
+        );
+      }
+      if (ticket.status !== 'released') {
+        throw new BusinessRuleError(
+          'TICKET_NOT_RELEASED',
+          'Tickets have not been released for this registration yet',
+        );
+      }
+      const reg = this.registrations.find((r) => r.id === ticket.registrationId);
+      return reg ? {...reg, ticketStatus: ticket.status, ticketCode: ticket.ticketCode} : null;
+    }
+
+    const codeTicket = this.tickets.find(
+      (t) => t.eventId === eventId && t.ticketCode.toUpperCase() === raw.toUpperCase(),
     );
-    return reg ? {...reg} : null;
+    if (codeTicket) {
+      if (codeTicket.status === 'not_released') {
+        throw new BusinessRuleError(
+          'TICKET_NOT_RELEASED',
+          'Ticket has not been released for this participant yet',
+        );
+      }
+      if (codeTicket.status === 'revoked') {
+        throw new BusinessRuleError(
+          'TICKET_REVOKED',
+          'This ticket has been revoked and is no longer valid',
+        );
+      }
+    }
+    return null;
+  }
+
+  async releaseEventTickets(
+    eventId: string,
+    actor: {id: string; name: string},
+  ): Promise<TicketReleaseSummary> {
+    const ev = this.events.find((e) => e.id === eventId);
+    if (!ev) throw new NotFoundError('Event not found');
+    if (ev.status === 'draft' || ev.status === 'cancelled') {
+      throw new BusinessRuleError(
+        'EVENT_NOT_TICKET_ELIGIBLE',
+        `Cannot release tickets while event status is ${ev.status}`,
+      );
+    }
+
+    const eligibleRegs = this.registrations.filter(
+      (r) => r.eventId === eventId && (r.status === 'confirmed' || r.status === 'attended'),
+    );
+    const nowIso = new Date().toISOString();
+    let releasedCount = 0;
+    let alreadyReleasedCount = 0;
+
+    for (const reg of eligibleRegs) {
+      let ticket = this.tickets.find((t) => t.registrationId === reg.id);
+      if (ticket && ticket.status === 'released') {
+        alreadyReleasedCount += 1;
+        continue;
+      }
+      if (ticket && ticket.status === 'revoked') {
+        continue;
+      }
+
+      const rawToken = generateOpaqueQrToken();
+      const tokenHash = hashInvitationToken(rawToken);
+      const sealedToken = sealTicketToken(rawToken);
+      const ticketCode = ticket?.ticketCode || reg.ticketCode || generateTicketCode();
+
+      if (ticket) {
+        ticket.status = 'released';
+        ticket.tokenHash = tokenHash;
+        ticket.sealedToken = sealedToken;
+        ticket.releasedBy = actor.id;
+        ticket.releasedAt = nowIso;
+        ticket.updatedAt = nowIso;
+      } else {
+        ticket = {
+          id: `tck-${reg.id}`,
+          registrationId: reg.id,
+          eventId,
+          userId: reg.studentId,
+          studentName: reg.studentName,
+          studentEmail: reg.studentEmail,
+          registrationStatus: reg.status,
+          ticketCode,
+          status: 'released',
+          tokenHash,
+          sealedToken,
+          releasedBy: actor.id,
+          releasedAt: nowIso,
+          revokedBy: null,
+          revokedAt: null,
+          createdAt: reg.createdAt,
+          updatedAt: nowIso,
+        };
+        this.tickets.push(ticket);
+      }
+
+      reg.ticketStatus = 'released';
+      reg.ticketCode = ticketCode;
+      reg.ticketReleasedAt = nowIso;
+      reg.qrToken = rawToken;
+
+      releasedCount += 1;
+      await this.createNotification({
+        userId: reg.studentId,
+        title: `Ticket Released: ${ev.title}`,
+        message: `Your QR pass (${ticketCode}) for ${ev.title} is now available in My Registrations.`,
+        category: 'registration',
+        link: '/app/student/registrations',
+      });
+    }
+
+    const releaseTimestamp = ev.ticketsReleasedAt && releasedCount === 0 ? ev.ticketsReleasedAt : nowIso;
+    ev.ticketsReleasedAt = releaseTimestamp;
+    ev.ticketsReleasedBy = actor.id;
+    ev.updatedAt = nowIso;
+
+    return {
+      eventId,
+      releasedCount,
+      alreadyReleasedCount,
+      totalReleased: releasedCount + alreadyReleasedCount,
+      eligibleCount: eligibleRegs.length,
+      ticketsReleasedAt: releaseTimestamp,
+      emailDelivery: 'not_configured',
+    };
+  }
+
+  async listEventTickets(eventId: string): Promise<TicketRecord[]> {
+    return this.tickets
+      .filter((t) => t.eventId === eventId)
+      .map((t) => {
+        const reg = this.registrations.find((r) => r.id === t.registrationId);
+        return {
+          id: t.id,
+          registrationId: t.registrationId,
+          eventId: t.eventId,
+          userId: t.userId,
+          studentName: reg?.studentName || t.studentName,
+          studentEmail: reg?.studentEmail || t.studentEmail,
+          registrationStatus: reg?.status || t.registrationStatus,
+          ticketCode: t.ticketCode,
+          status: t.status,
+          releasedBy: t.releasedBy,
+          releasedAt: t.releasedAt,
+          revokedBy: t.revokedBy,
+          revokedAt: t.revokedAt,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+        };
+      });
+  }
+
+  async listStudentTickets(userId: string): Promise<TicketRecord[]> {
+    return this.tickets
+      .filter((t) => t.userId === userId)
+      .map((t) => {
+        const reg = this.registrations.find((r) => r.id === t.registrationId);
+        return {
+          id: t.id,
+          registrationId: t.registrationId,
+          eventId: t.eventId,
+          userId: t.userId,
+          registrationStatus: reg?.status || t.registrationStatus,
+          ticketCode: t.ticketCode,
+          status: t.status,
+          qrToken: t.status === 'released' ? unsealTicketToken(t.sealedToken) : undefined,
+          releasedBy: t.releasedBy,
+          releasedAt: t.releasedAt,
+          revokedBy: t.revokedBy,
+          revokedAt: t.revokedAt,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+        };
+      });
+  }
+
+  async getTicketById(ticketId: string): Promise<TicketRecord | null> {
+    const t = this.tickets.find((item) => item.id === ticketId);
+    if (!t) return null;
+    const reg = this.registrations.find((r) => r.id === t.registrationId);
+    return {
+      id: t.id,
+      registrationId: t.registrationId,
+      eventId: t.eventId,
+      userId: t.userId,
+      studentName: reg?.studentName || t.studentName,
+      studentEmail: reg?.studentEmail || t.studentEmail,
+      registrationStatus: reg?.status || t.registrationStatus,
+      ticketCode: t.ticketCode,
+      status: t.status,
+      releasedBy: t.releasedBy,
+      releasedAt: t.releasedAt,
+      revokedBy: t.revokedBy,
+      revokedAt: t.revokedAt,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+    };
+  }
+
+  async revokeTicket(
+    ticketId: string,
+    actor: {id: string; name: string},
+    reason?: string,
+  ): Promise<TicketRecord | null> {
+    const t = this.tickets.find((item) => item.id === ticketId);
+    if (!t) return null;
+    const nowIso = new Date().toISOString();
+    t.status = 'revoked';
+    t.sealedToken = null;
+    t.revokedBy = actor.id;
+    t.revokedAt = nowIso;
+    t.updatedAt = nowIso;
+
+    const reg = this.registrations.find((r) => r.id === t.registrationId);
+    if (reg) {
+      reg.ticketStatus = 'revoked';
+      reg.qrToken = '';
+    }
+
+    const ev = this.events.find((e) => e.id === t.eventId);
+    await this.createNotification({
+      userId: t.userId,
+      title: `Ticket Revoked: ${ev?.title || 'Event'}`,
+      message: reason
+        ? `Your ticket (${t.ticketCode}) was revoked: ${reason}`
+        : `Your ticket (${t.ticketCode}) has been revoked by the organizing club.`,
+      category: 'registration',
+      link: '/app/student/registrations',
+    });
+
+    return this.getTicketById(ticketId);
   }
 
   async recordAttendance(input: {
@@ -2441,6 +2917,22 @@ export class DemoDataAdapter implements DataAdapter {
         'REGISTRATION_WAITLISTED',
         'Waitlisted registrations cannot be checked in until confirmed',
       );
+    }
+
+    if (input.method === 'qr_scan') {
+      const ticket = this.tickets.find((t) => t.registrationId === input.registrationId);
+      if (!ticket || ticket.status === 'not_released') {
+        throw new BusinessRuleError(
+          'TICKET_NOT_RELEASED',
+          'Ticket has not been released for this registration yet',
+        );
+      }
+      if (ticket.status === 'revoked') {
+        throw new BusinessRuleError(
+          'TICKET_REVOKED',
+          'This ticket has been revoked and cannot be used for check-in',
+        );
+      }
     }
 
     const existing = this.attendance.find((a) => a.registrationId === input.registrationId);
@@ -2508,22 +3000,127 @@ export class DemoDataAdapter implements DataAdapter {
     return this.attendance.filter((a) => a.eventId === eventId).map((a) => ({...a}));
   }
 
+  async getAttendanceSummary(eventId: string): Promise<AttendanceSummary> {
+    const confirmedRegs = this.registrations.filter(
+      (r) => r.eventId === eventId && (r.status === 'confirmed' || r.status === 'attended'),
+    );
+    const confirmedCount = confirmedRegs.length;
+    const attendedCount = confirmedRegs.filter((r) => r.status === 'attended').length;
+    const evTickets = this.tickets.filter(
+      (t) => t.eventId === eventId && confirmedRegs.some((r) => r.id === t.registrationId),
+    );
+    const ticketsReleasedCount = evTickets.filter((t) => t.status === 'released').length;
+    const ticketsNotReleasedCount = Math.max(0, confirmedCount - ticketsReleasedCount);
+    const remainingCount = Math.max(0, confirmedCount - attendedCount);
+    const attendancePercentage =
+      confirmedCount > 0 ? Math.round((attendedCount / confirmedCount) * 100) : 0;
+
+    return {
+      eventId,
+      confirmedCount,
+      ticketsReleasedCount,
+      ticketsNotReleasedCount,
+      attendedCount,
+      remainingCount,
+      attendancePercentage,
+    };
+  }
+
   async upsertEventReport(
-    report: Omit<EventReport, 'id' | 'submittedAt'>,
+    report: Omit<EventReport, 'id' | 'submittedAt'> & {actorRole?: string},
   ): Promise<EventReport> {
     const now = new Date().toISOString();
     const existing = this.eventReports.find((r) => r.eventId === report.eventId);
+    const nextStatus: EventReportStatus = report.status === 'draft' ? 'draft' : 'submitted';
+    const historyEntry: EventReportHistoryEntry = {
+      action:
+        existing && existing.status === 'changes_requested' && nextStatus === 'submitted'
+          ? 'RESUBMITTED'
+          : nextStatus === 'draft'
+            ? 'SAVED_DRAFT'
+            : 'SUBMITTED',
+      status: nextStatus,
+      actorId: report.submittedBy,
+      actorName: report.submittedByName,
+      actorRole: report.actorRole || 'Club Officer',
+      notes:
+        existing && existing.status === 'changes_requested' && nextStatus === 'submitted'
+          ? 'Resubmitted report after addressing review feedback.'
+          : undefined,
+      timestamp: now,
+    };
+
     if (existing) {
-      Object.assign(existing, report, {submittedAt: now});
+      const nextHistory = [...(existing.history || []), historyEntry];
+      Object.assign(existing, report, {
+        status: nextStatus,
+        history: nextHistory,
+        submittedAt: nextStatus === 'submitted' ? now : existing.submittedAt,
+        updatedAt: now,
+      });
       return {...existing};
     }
+
     const created: EventReport = {
       id: `rep-evt-${Date.now()}`,
       ...report,
+      status: nextStatus,
+      history: [historyEntry],
       submittedAt: now,
+      updatedAt: now,
     };
     this.eventReports.push(created);
     return {...created};
+  }
+
+  async reviewEventReport(
+    reportId: string,
+    actor: {id: string; name: string},
+    input: {
+      status: 'under_review' | 'changes_requested' | 'approved' | 'rejected';
+      reviewNotes: string;
+    },
+  ): Promise<EventReport> {
+    const existing = this.eventReports.find((r) => r.id === reportId);
+    if (!existing) throw new NotFoundError('Report not found');
+    const now = new Date().toISOString();
+    const entry: EventReportHistoryEntry = {
+      action: `REVIEW_${input.status.toUpperCase()}`,
+      status: input.status,
+      actorId: actor.id,
+      actorName: actor.name,
+      actorRole: 'Super Admin',
+      notes: input.reviewNotes || undefined,
+      timestamp: now,
+    };
+    existing.status = input.status;
+    existing.reviewedBy = actor.id;
+    existing.reviewedByName = actor.name;
+    existing.reviewedAt = now;
+    existing.reviewNotes = input.reviewNotes;
+    existing.history = [...(existing.history || []), entry];
+    existing.updatedAt = now;
+
+    const recipients = new Set<string>([existing.submittedBy]);
+    this.memberships
+      .filter(
+        (m) =>
+          m.clubId === existing.clubId &&
+          (m.role === 'president' || m.role === 'vice_president'),
+      )
+      .forEach((m) => recipients.add(m.userId));
+    for (const userId of recipients) {
+      await this.createNotification({
+        userId,
+        title: `Event Report ${input.status.replace('_', ' ')}: ${existing.eventTitle}`,
+        message: input.reviewNotes
+          ? `Super Admin marked the report as ${input.status.replace('_', ' ')}: "${input.reviewNotes}".`
+          : `Super Admin marked the report for ${existing.eventTitle} as ${input.status.replace('_', ' ')}.`,
+        category: 'admin',
+        link: '/app/club-admin/reports',
+      });
+    }
+    return {...existing};
   }
 
   async getEventReport(eventId: string): Promise<EventReport | null> {
@@ -2539,18 +3136,33 @@ export class DemoDataAdapter implements DataAdapter {
     report: Omit<FinancialReport, 'id' | 'submittedAt'>,
   ): Promise<FinancialReport> {
     const now = new Date().toISOString();
-    const existing = this.financialReports.find((r) => r.eventId === report.eventId);
-    if (existing) {
-      Object.assign(existing, report, {submittedAt: now});
-      return {...existing};
-    }
-    const created: FinancialReport = {
+    const collectionsMinor = report.lineItems
+      .filter((i) => i.type === 'collection')
+      .reduce((sum, i) => sum + rupeesToMinorUnits(i.amount), 0);
+    const expensesMinor = report.lineItems
+      .filter((i) => i.type === 'expense')
+      .reduce((sum, i) => sum + rupeesToMinorUnits(i.amount), 0);
+    const netMinor = collectionsMinor - expensesMinor;
+
+    const payload: FinancialReport = {
       id: `fin-rep-${Date.now()}`,
       ...report,
+      totalCollectionsMinorUnits: collectionsMinor,
+      totalExpensesMinorUnits: expensesMinor,
+      netBalanceMinorUnits: netMinor,
+      totalCollections: minorUnitsToRupees(collectionsMinor),
+      totalExpenses: minorUnitsToRupees(expensesMinor),
+      netBalance: minorUnitsToRupees(netMinor),
       submittedAt: now,
     };
-    this.financialReports.push(created);
-    return {...created};
+
+    const existing = this.financialReports.find((r) => r.eventId === report.eventId);
+    if (existing) {
+      Object.assign(existing, payload, {id: existing.id});
+      return {...existing};
+    }
+    this.financialReports.push(payload);
+    return {...payload};
   }
 
   async getFinancialReport(eventId: string): Promise<FinancialReport | null> {
@@ -2560,6 +3172,147 @@ export class DemoDataAdapter implements DataAdapter {
 
   async listAllFinancialReports(): Promise<FinancialReport[]> {
     return [...this.financialReports];
+  }
+
+  async createFinanceEntry(input: {
+    clubId: string;
+    eventId?: string | null;
+    entryType: FinanceEntryType;
+    sourceOrCategory: string;
+    description: string;
+    amountMinorUnits: number;
+    transactionDate: string;
+    vendorOrRecipient: string;
+    receiptUrl?: string;
+    notes?: string;
+    createdBy: string;
+    createdByName: string;
+  }): Promise<FinanceEntry> {
+    const club = this.clubs.find((c) => c.id === input.clubId);
+    if (!club) throw new NotFoundError('Club not found');
+    let eventTitle: string | null = null;
+    if (input.eventId) {
+      const ev = this.events.find((e) => e.id === input.eventId);
+      if (!ev) throw new NotFoundError('Linked event not found');
+      if (ev.clubId !== club.id) {
+        throw new BusinessRuleError(
+          'CROSS_CLUB_EVENT_LINK',
+          'Linked event does not belong to the selected club',
+        );
+      }
+      eventTitle = ev.title;
+    }
+    const now = new Date().toISOString();
+    const amountMinorUnits = Math.max(0, Math.trunc(input.amountMinorUnits));
+    const entry: FinanceEntry = {
+      id: `fin-ent-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      clubId: club.id,
+      clubName: club.name,
+      eventId: input.eventId ?? null,
+      eventTitle,
+      entryType: input.entryType,
+      sourceOrCategory: input.sourceOrCategory.trim(),
+      description: input.description.trim(),
+      amountMinorUnits,
+      amount: minorUnitsToRupees(amountMinorUnits),
+      transactionDate: input.transactionDate,
+      vendorOrRecipient: input.vendorOrRecipient.trim(),
+      receiptUrl: input.receiptUrl?.trim() || '',
+      notes: input.notes?.trim() || '',
+      createdBy: input.createdBy,
+      createdByName: input.createdByName,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.financeEntries.unshift(entry);
+    return {...entry};
+  }
+
+  async deleteFinanceEntry(clubId: string, entryId: string): Promise<boolean> {
+    const idx = this.financeEntries.findIndex((e) => e.id === entryId && e.clubId === clubId);
+    if (idx === -1) return false;
+    this.financeEntries.splice(idx, 1);
+    return true;
+  }
+
+  async getFinanceSummary(filters?: {
+    clubId?: string;
+    eventId?: string;
+  }): Promise<FinanceSummaryResponse> {
+    const entries = this.financeEntries
+      .filter((e) => {
+        if (filters?.clubId && e.clubId !== filters.clubId) return false;
+        if (filters?.eventId && e.eventId !== filters.eventId) return false;
+        return true;
+      })
+      .map((e) => ({...e}));
+
+    let totalIncomeMinorUnits = 0;
+    let totalExpensesMinorUnits = 0;
+    const byClubMap = new Map<string, FinanceClubSummary>();
+    const byEventMap = new Map<string, FinanceEventSummary>();
+
+    for (const e of entries) {
+      if (e.entryType === 'income') totalIncomeMinorUnits += e.amountMinorUnits;
+      else totalExpensesMinorUnits += e.amountMinorUnits;
+
+      const clubAgg = byClubMap.get(e.clubId) || {
+        clubId: e.clubId,
+        clubName: e.clubName || 'Club',
+        totalIncomeMinorUnits: 0,
+        totalExpensesMinorUnits: 0,
+        netBalanceMinorUnits: 0,
+        totalIncome: 0,
+        totalExpenses: 0,
+        netBalance: 0,
+        entryCount: 0,
+      };
+      if (e.entryType === 'income') clubAgg.totalIncomeMinorUnits += e.amountMinorUnits;
+      else clubAgg.totalExpensesMinorUnits += e.amountMinorUnits;
+      clubAgg.netBalanceMinorUnits = clubAgg.totalIncomeMinorUnits - clubAgg.totalExpensesMinorUnits;
+      clubAgg.totalIncome = minorUnitsToRupees(clubAgg.totalIncomeMinorUnits);
+      clubAgg.totalExpenses = minorUnitsToRupees(clubAgg.totalExpensesMinorUnits);
+      clubAgg.netBalance = minorUnitsToRupees(clubAgg.netBalanceMinorUnits);
+      clubAgg.entryCount += 1;
+      byClubMap.set(e.clubId, clubAgg);
+
+      if (e.eventId) {
+        const evAgg = byEventMap.get(e.eventId) || {
+          eventId: e.eventId,
+          eventTitle: e.eventTitle || 'Event',
+          clubId: e.clubId,
+          clubName: e.clubName || 'Club',
+          totalIncomeMinorUnits: 0,
+          totalExpensesMinorUnits: 0,
+          netBalanceMinorUnits: 0,
+          totalIncome: 0,
+          totalExpenses: 0,
+          netBalance: 0,
+          entryCount: 0,
+        };
+        if (e.entryType === 'income') evAgg.totalIncomeMinorUnits += e.amountMinorUnits;
+        else evAgg.totalExpensesMinorUnits += e.amountMinorUnits;
+        evAgg.netBalanceMinorUnits = evAgg.totalIncomeMinorUnits - evAgg.totalExpensesMinorUnits;
+        evAgg.totalIncome = minorUnitsToRupees(evAgg.totalIncomeMinorUnits);
+        evAgg.totalExpenses = minorUnitsToRupees(evAgg.totalExpensesMinorUnits);
+        evAgg.netBalance = minorUnitsToRupees(evAgg.netBalanceMinorUnits);
+        evAgg.entryCount += 1;
+        byEventMap.set(e.eventId, evAgg);
+      }
+    }
+
+    const netBalanceMinorUnits = totalIncomeMinorUnits - totalExpensesMinorUnits;
+    return {
+      entries,
+      totalIncomeMinorUnits,
+      totalExpensesMinorUnits,
+      netBalanceMinorUnits,
+      totalIncome: minorUnitsToRupees(totalIncomeMinorUnits),
+      totalExpenses: minorUnitsToRupees(totalExpensesMinorUnits),
+      netBalance: minorUnitsToRupees(netBalanceMinorUnits),
+      byClub: [...byClubMap.values()].sort((a, b) => a.clubName.localeCompare(b.clubName)),
+      byEvent: [...byEventMap.values()].sort((a, b) => a.eventTitle.localeCompare(b.eventTitle)),
+    };
   }
 
   async listNotificationsForUser(userId: string): Promise<NotificationItem[]> {
@@ -2599,23 +3352,118 @@ export class DemoDataAdapter implements DataAdapter {
   }
 
   async getAdminDashboardStats(): Promise<AdminDashboardStats> {
-    const totalCollections = this.financialReports.reduce((acc, r) => acc + r.totalCollections, 0);
-    const totalExpenses = this.financialReports.reduce((acc, r) => acc + r.totalExpenses, 0);
+    const reportCollectionsMinor = this.financialReports.reduce(
+      (acc, r) => acc + (r.totalCollectionsMinorUnits ?? rupeesToMinorUnits(r.totalCollections)),
+      0,
+    );
+    const reportExpensesMinor = this.financialReports.reduce(
+      (acc, r) => acc + (r.totalExpensesMinorUnits ?? rupeesToMinorUnits(r.totalExpenses)),
+      0,
+    );
+    const ledgerIncomeMinor = this.financeEntries
+      .filter((e) => e.entryType === 'income')
+      .reduce((acc, e) => acc + e.amountMinorUnits, 0);
+    const ledgerExpensesMinor = this.financeEntries
+      .filter((e) => e.entryType === 'expense')
+      .reduce((acc, e) => acc + e.amountMinorUnits, 0);
+
+    const collectionsMinor = reportCollectionsMinor + ledgerIncomeMinor;
+    const expensesMinor = reportExpensesMinor + ledgerExpensesMinor;
+    const completedEvents = this.events.filter((e) => e.status === 'completed').length;
+    const submittedReportsCount = this.eventReports.filter((r) => r.status !== 'draft').length;
+    const awaitingApprovalReportsCount = this.eventReports.filter(
+      (r) => r.status === 'submitted' || r.status === 'under_review',
+    ).length;
 
     return {
       totalStudents: this.users.filter((u) => !u.isSuperAdmin).length,
       totalClubs: this.clubs.length,
       activeClubs: this.clubs.filter((c) => c.status === 'active').length,
       totalEvents: this.events.length,
-      upcomingEvents: this.events.filter((e) =>
-        e.status === 'published' || e.status === 'registration_open',
+      upcomingEvents: this.events.filter(
+        (e) => e.status === 'published' || e.status === 'registration_open',
       ).length,
+      completedEvents,
       totalRegistrations: this.registrations.length,
-      totalCollections,
-      totalExpenses,
-      netBalance: totalCollections - totalExpenses,
+      totalAttendance: this.attendance.length,
+      pendingReportsCount: Math.max(0, completedEvents - submittedReportsCount),
+      awaitingApprovalReportsCount,
+      totalCollections: minorUnitsToRupees(collectionsMinor),
+      totalExpenses: minorUnitsToRupees(expensesMinor),
+      netBalance: minorUnitsToRupees(collectionsMinor - expensesMinor),
       recentAuditLogs: this.auditLogs.slice(0, 8),
     };
+  }
+
+  async getAdminAnalytics(): Promise<AdminAnalyticsResponse> {
+    const clubs: ClubOverviewItem[] = this.clubs.map((c) => {
+      const members = this.memberships.filter((m) => m.clubId === c.id);
+      const president = members.find((m) => m.role === 'president');
+      const vp = members.find((m) => m.role === 'vice_president');
+      const coreCount = members.filter((m) => m.role === 'core_member').length;
+      const clubEvents = this.events.filter((e) => e.clubId === c.id);
+      return {
+        club: {...c},
+        presidentName: president?.userName ?? null,
+        presidentEmail: president?.userEmail ?? null,
+        vicePresidentName: vp?.userName ?? null,
+        vicePresidentEmail: vp?.userEmail ?? null,
+        activeCoreCount: coreCount,
+        totalMembersCount: members.length,
+        upcomingEventsCount: clubEvents.filter(
+          (e) => e.status === 'published' || e.status === 'registration_open',
+        ).length,
+        completedEventsCount: clubEvents.filter((e) => e.status === 'completed').length,
+      };
+    });
+
+    const events: EventAnalyticsItem[] = this.events.map((ev) => {
+      const evRegs = this.registrations.filter((r) => r.eventId === ev.id);
+      const confirmedCount = evRegs.filter(
+        (r) => r.status === 'confirmed' || r.status === 'attended',
+      ).length;
+      const attendedCount = evRegs.filter((r) => r.status === 'attended').length;
+      const waitlistedCount = evRegs.filter((r) => r.status === 'waitlisted').length;
+      const evTickets = this.tickets.filter((t) => t.eventId === ev.id);
+      const ticketsReleasedCount = evTickets.filter((t) => t.status === 'released').length;
+      const ticketsNotReleasedCount = Math.max(0, confirmedCount - ticketsReleasedCount);
+      const report = this.eventReports.find((r) => r.eventId === ev.id);
+
+      let incomeMinor = 0;
+      let expensesMinor = 0;
+      for (const fr of this.financialReports.filter((f) => f.eventId === ev.id)) {
+        incomeMinor += fr.totalCollectionsMinorUnits ?? rupeesToMinorUnits(fr.totalCollections);
+        expensesMinor += fr.totalExpensesMinorUnits ?? rupeesToMinorUnits(fr.totalExpenses);
+      }
+      for (const fe of this.financeEntries.filter((f) => f.eventId === ev.id)) {
+        if (fe.entryType === 'income') incomeMinor += fe.amountMinorUnits;
+        else expensesMinor += fe.amountMinorUnits;
+      }
+
+      return {
+        eventId: ev.id,
+        title: ev.title,
+        clubId: ev.clubId,
+        clubName: ev.clubName,
+        status: ev.status,
+        startTime: ev.startTime,
+        venue: ev.venue,
+        capacity: ev.capacity,
+        confirmedCount,
+        waitlistedCount,
+        ticketsReleasedCount,
+        ticketsNotReleasedCount,
+        attendedCount,
+        attendancePercentage:
+          confirmedCount > 0 ? Math.round((attendedCount / confirmedCount) * 100) : 0,
+        reportStatus: report?.status ?? 'not_submitted',
+        totalIncome: minorUnitsToRupees(incomeMinor),
+        totalExpenses: minorUnitsToRupees(expensesMinor),
+        netBalance: minorUnitsToRupees(incomeMinor - expensesMinor),
+      };
+    });
+
+    return {clubs, events};
   }
 
   async listAuditLogs(): Promise<AuditLogEntry[]> {

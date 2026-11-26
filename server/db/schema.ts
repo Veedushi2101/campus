@@ -1,5 +1,6 @@
 import {sql} from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   check,
   index,
@@ -15,6 +16,7 @@ import {
 import type {CoreMemberPermission} from '../../shared/constants/permissions.ts';
 import type {
   EventEligibilityRules,
+  EventReportHistoryEntry,
   FormAnswerValue,
   FormField,
   FormFieldValidationRules,
@@ -64,6 +66,7 @@ export const clubs = pgTable(
     contactEmail: text('contact_email').notNull().default(''),
     foundedYear: integer('founded_year').notNull().default(2024),
     meetingSchedule: text('meeting_schedule').notNull().default(''),
+    instagramUrl: text('instagram_url').notNull().default(''),
     status: text('status').notNull().default('pending'),
     followerCount: integer('follower_count').notNull().default(0),
     createdBy: uuid('created_by').references(() => users.id, {onDelete: 'set null'}),
@@ -211,6 +214,10 @@ export const events = pgTable(
     status: text('status').notNull().default('draft'),
     createdBy: uuid('created_by').references(() => users.id, {onDelete: 'set null'}),
     publishedAt: timestamp('published_at', {withTimezone: true}),
+    ticketsReleasedAt: timestamp('tickets_released_at', {withTimezone: true}),
+    ticketsReleasedBy: uuid('tickets_released_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', {withTimezone: true}).defaultNow().notNull(),
   },
@@ -340,7 +347,44 @@ export const registrations = pgTable(
     index('idx_registrations_user_submitted').on(table.userId, table.submittedAt),
     check(
       'chk_registrations_status',
-      sql`${table.status} IN ('confirmed', 'waitlisted', 'cancelled', 'attended')`,
+      sql`${table.status} IN ('pending', 'confirmed', 'waitlisted', 'cancelled', 'attended')`,
+    ),
+  ],
+);
+
+// 8b. tickets (Controlled ticket release + hashed/sealed QR verification)
+export const tickets = pgTable(
+  'tickets',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    registrationId: uuid('registration_id')
+      .notNull()
+      .unique()
+      .references(() => registrations.id, {onDelete: 'cascade'}),
+    eventId: uuid('event_id')
+      .notNull()
+      .references(() => events.id, {onDelete: 'cascade'}),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, {onDelete: 'cascade'}),
+    ticketCode: text('ticket_code').notNull().unique(),
+    tokenHash: text('token_hash').unique(),
+    sealedToken: text('sealed_token'),
+    status: text('status').notNull().default('not_released'),
+    releasedBy: uuid('released_by').references(() => users.id, {onDelete: 'set null'}),
+    releasedAt: timestamp('released_at', {withTimezone: true}),
+    revokedBy: uuid('revoked_by').references(() => users.id, {onDelete: 'set null'}),
+    revokedAt: timestamp('revoked_at', {withTimezone: true}),
+    createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', {withTimezone: true}).defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_tickets_event_status').on(table.eventId, table.status),
+    index('idx_tickets_user').on(table.userId),
+    index('idx_tickets_token_hash').on(table.tokenHash),
+    check(
+      'chk_tickets_status',
+      sql`${table.status} IN ('not_released', 'released', 'revoked')`,
     ),
   ],
 );
@@ -373,7 +417,7 @@ export const attendanceRecords = pgTable(
   ],
 );
 
-// 10. event_reports
+// 10. event_reports (Structured post-event submission + review workflow)
 export const eventReports = pgTable(
   'event_reports',
   {
@@ -386,21 +430,39 @@ export const eventReports = pgTable(
       .notNull()
       .references(() => clubs.id, {onDelete: 'cascade'}),
     summary: text('summary').notNull(),
+    objectives: text('objectives').notNull().default(''),
+    actualEventDate: timestamp('actual_event_date', {withTimezone: true}),
+    participationSummary: text('participation_summary').notNull().default(''),
+    outcomes: text('outcomes').notNull().default(''),
     highlights: text('highlights').notNull(),
     challenges: text('challenges').notNull().default('None reported'),
+    feedbackObservations: text('feedback_observations').notNull().default(''),
+    evidenceUrl: text('evidence_url').notNull().default(''),
     actualAttendance: integer('actual_attendance').notNull(),
     registeredTotal: integer('registered_total').notNull().default(0),
     completionStatus: text('completion_status').notNull().default('completed'),
+    status: text('status').notNull().default('submitted'),
     submittedBy: uuid('submitted_by').references(() => users.id, {onDelete: 'set null'}),
     submittedByName: text('submitted_by_name').notNull().default('Club Officer'),
     submittedAt: timestamp('submitted_at', {withTimezone: true}).defaultNow().notNull(),
+    reviewedBy: uuid('reviewed_by').references(() => users.id, {onDelete: 'set null'}),
+    reviewedByName: text('reviewed_by_name'),
+    reviewedAt: timestamp('reviewed_at', {withTimezone: true}),
+    reviewNotes: text('review_notes').notNull().default(''),
+    history: jsonb('history').$type<EventReportHistoryEntry[]>().notNull().default([]),
+    updatedBy: uuid('updated_by').references(() => users.id, {onDelete: 'set null'}),
     updatedAt: timestamp('updated_at', {withTimezone: true}).defaultNow().notNull(),
   },
   (table) => [
+    index('idx_event_reports_status').on(table.status),
     check('chk_event_reports_attendance', sql`${table.actualAttendance} >= 0`),
     check(
       'chk_event_reports_completion_status',
       sql`${table.completionStatus} IN ('completed', 'partial')`,
+    ),
+    check(
+      'chk_event_reports_status',
+      sql`${table.status} IN ('draft', 'submitted', 'under_review', 'changes_requested', 'approved', 'rejected')`,
     ),
   ],
 );
@@ -420,6 +482,15 @@ export const financeReports = pgTable('finance_reports', {
     .default('0.00'),
   totalExpenses: numeric('total_expenses', {precision: 12, scale: 2}).notNull().default('0.00'),
   netBalance: numeric('net_balance', {precision: 12, scale: 2}).notNull().default('0.00'),
+  totalCollectionsMinorUnits: bigint('total_collections_minor_units', {mode: 'number'})
+    .notNull()
+    .default(0),
+  totalExpensesMinorUnits: bigint('total_expenses_minor_units', {mode: 'number'})
+    .notNull()
+    .default(0),
+  netBalanceMinorUnits: bigint('net_balance_minor_units', {mode: 'number'})
+    .notNull()
+    .default(0),
   notes: text('notes').notNull().default(''),
   submittedBy: uuid('submitted_by').references(() => users.id, {onDelete: 'set null'}),
   submittedByName: text('submitted_by_name').notNull().default('Club Officer'),
@@ -449,6 +520,36 @@ export const financeLineItems = pgTable(
       sql`${table.itemType} IN ('collection', 'expense', 'adjustment')`,
     ),
     check('chk_finance_line_items_amount', sql`${table.amount} >= 0`),
+  ],
+);
+
+// 12b. finance_entries (Club & event-linked integer-paise income/expense ledger)
+export const financeEntries = pgTable(
+  'finance_entries',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    clubId: uuid('club_id')
+      .notNull()
+      .references(() => clubs.id, {onDelete: 'cascade'}),
+    eventId: uuid('event_id').references(() => events.id, {onDelete: 'set null'}),
+    entryType: text('entry_type').notNull(),
+    sourceOrCategory: text('source_or_category').notNull(),
+    description: text('description').notNull(),
+    amountMinorUnits: bigint('amount_minor_units', {mode: 'number'}).notNull(),
+    transactionDate: timestamp('transaction_date', {withTimezone: true}).notNull(),
+    vendorOrRecipient: text('vendor_recipient').notNull().default(''),
+    receiptUrl: text('receipt_url').notNull().default(''),
+    notes: text('notes').notNull().default(''),
+    createdBy: uuid('created_by').references(() => users.id, {onDelete: 'set null'}),
+    createdByName: text('created_by_name').notNull().default('Club Officer'),
+    createdAt: timestamp('created_at', {withTimezone: true}).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', {withTimezone: true}).defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_finance_entries_club_date').on(table.clubId, table.transactionDate),
+    index('idx_finance_entries_event').on(table.eventId),
+    check('chk_finance_entries_type', sql`${table.entryType} IN ('income', 'expense')`),
+    check('chk_finance_entries_amount_minor_units', sql`${table.amountMinorUnits} >= 0`),
   ],
 );
 

@@ -1,24 +1,26 @@
-import React from 'react';
+import React, {useState} from 'react';
 import {useQuery} from '@tanstack/react-query';
 import {ArrowRight, Award, Calendar, Compass, Ticket} from 'lucide-react';
 import {Link} from 'react-router-dom';
 import {MAX_FOLLOWED_CLUBS} from '../../../shared/constants/permissions.ts';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
+import {Button} from '../../components/ui/Button.tsx';
 import {Card} from '../../components/ui/FormControls.tsx';
 import {ClubLogo, LoadingSkeleton, StatusLabel} from '../../components/ui/Feedback.tsx';
 import {useAuth} from '../../context/AuthContext.tsx';
 
 export const StudentDashboardPage: React.FC = () => {
   const {user, followedClubIds} = useAuth();
+  const [eventsPage, setEventsPage] = useState(1);
 
   const {data: clubs = [], isLoading: clubsLoading} = useQuery({
     queryKey: ['clubs'],
     queryFn: () => apiClient.listClubs(),
   });
 
-  const {data: events = [], isLoading: eventsLoading} = useQuery({
-    queryKey: ['events', 'upcoming'],
-    queryFn: () => apiClient.listEvents({upcomingOnly: true}),
+  const {data: activeEventsResult, isLoading: eventsLoading} = useQuery({
+    queryKey: ['events', 'upcoming', 'dashboard', eventsPage],
+    queryFn: () => apiClient.listEventsPaginated({upcomingOnly: true, page: eventsPage, pageSize: 6}),
   });
 
   const {data: registrations = [], isLoading: regsLoading} = useQuery({
@@ -31,8 +33,18 @@ export const StudentDashboardPage: React.FC = () => {
     queryFn: () => apiClient.listNotifications(),
   });
 
+  const events = activeEventsResult?.items ?? [];
+  const eventsPagination = activeEventsResult?.pagination;
   const followedClubs = clubs.filter((c) => followedClubIds.includes(c.id));
-  const upcomingRegistrations = registrations.filter((r) => r.status !== 'attended');
+  const upcomingRegistrations = registrations.filter(
+    (r) => r.status !== 'attended' && r.status !== 'cancelled',
+  );
+  const releasedPassesCount = upcomingRegistrations.filter(
+    (r) => r.ticketStatus === 'released' && Boolean(r.qrToken),
+  ).length;
+  const regByEventId = new Map(
+    registrations.filter((r) => r.status !== 'cancelled').map((r) => [r.eventId, r]),
+  );
 
   return (
     <div className="space-y-8">
@@ -46,7 +58,7 @@ export const StudentDashboardPage: React.FC = () => {
             Welcome back, {user?.name.split(' ')[0]}
           </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Track your followed clubs, upcoming event schedules, and entry QR passes.
+            Track your followed clubs, active campus events, and released entry QR passes.
           </p>
         </div>
 
@@ -86,12 +98,14 @@ export const StudentDashboardPage: React.FC = () => {
           <p className="mt-2 font-mono text-2xl font-semibold text-slate-900 tabular-nums">
             {upcomingRegistrations.length}
           </p>
-          <p className="mt-1 text-xs text-slate-500">QR passes ready for check-in</p>
+          <p className="mt-1 text-xs text-slate-500">
+            {releasedPassesCount} QR {releasedPassesCount === 1 ? 'pass' : 'passes'} released
+          </p>
         </Card>
         <Card className="p-5">
-          <p className="text-xs font-medium text-slate-500">Open Campus Events</p>
+          <p className="text-xs font-medium text-slate-500">Active Campus Events</p>
           <p className="mt-2 font-mono text-2xl font-semibold text-slate-900 tabular-nums">
-            {events.length}
+            {eventsPagination?.total ?? events.length}
           </p>
           <p className="mt-1 text-xs text-slate-500">Published across active clubs</p>
         </Card>
@@ -105,8 +119,95 @@ export const StudentDashboardPage: React.FC = () => {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-12">
-        {/* Followed Clubs & Upcoming Events */}
+        {/* Followed Clubs & Active Events */}
         <div className="space-y-6 lg:col-span-8">
+          <Card className="p-6">
+            <div className="flex items-center justify-between">
+              <h2 className="font-display text-base font-semibold text-slate-900">
+                Active Events
+              </h2>
+              <Link
+                to="/app/student/events"
+                className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700"
+              >
+                View all events
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
+            {eventsLoading ? (
+              <div className="mt-4">
+                <LoadingSkeleton rows={3} />
+              </div>
+            ) : events.length === 0 ? (
+              <p className="mt-4 text-sm text-slate-500">No active campus events right now.</p>
+            ) : (
+              <>
+                <div className="mt-4 divide-y divide-slate-100">
+                  {events.map((ev) => {
+                    const myReg = regByEventId.get(ev.id);
+                    const seatsLeft = Math.max(0, ev.capacity - ev.registeredCount);
+                    return (
+                      <Link
+                        key={ev.id}
+                        to={`/app/student/events/${ev.id}`}
+                        className="flex flex-col justify-between gap-3 py-3.5 hover:bg-slate-50/70 -mx-2 px-2 rounded-lg transition-colors sm:flex-row sm:items-center"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate text-sm font-semibold text-slate-900">{ev.title}</p>
+                            <StatusLabel status={ev.status} />
+                          </div>
+                          <p className="mt-0.5 text-xs text-slate-500">
+                            {ev.clubName} · {ev.category} · {new Date(ev.startTime).toLocaleDateString()} · {ev.venue}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          {myReg && (
+                            <StatusLabel
+                              status={
+                                myReg.ticketStatus === 'released'
+                                  ? 'released'
+                                  : myReg.status
+                              }
+                            />
+                          )}
+                          <span className="font-mono text-xs font-medium text-slate-600 tabular-nums">
+                            {seatsLeft > 0 ? `${seatsLeft} seats left` : 'Waitlist open'}
+                          </span>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </div>
+                {eventsPagination && eventsPagination.totalPages > 1 && (
+                  <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3">
+                    <span className="text-xs text-slate-500">
+                      Page {eventsPagination.page} of {eventsPagination.totalPages}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={eventsPagination.page <= 1}
+                        onClick={() => setEventsPage((p) => Math.max(1, p - 1))}
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={eventsPagination.page >= eventsPagination.totalPages}
+                        onClick={() => setEventsPage((p) => p + 1)}
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </Card>
+
           <Card className="p-6">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-base font-semibold text-slate-900">
@@ -150,46 +251,6 @@ export const StudentDashboardPage: React.FC = () => {
               </div>
             )}
           </Card>
-
-          <Card className="p-6">
-            <div className="flex items-center justify-between">
-              <h2 className="font-display text-base font-semibold text-slate-900">
-                Upcoming Campus Events
-              </h2>
-              <Link
-                to="/app/student/events"
-                className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700"
-              >
-                View all events
-                <ArrowRight className="h-3.5 w-3.5" />
-              </Link>
-            </div>
-            {eventsLoading ? (
-              <div className="mt-4">
-                <LoadingSkeleton rows={3} />
-              </div>
-            ) : (
-              <div className="mt-4 divide-y divide-slate-100">
-                {events.slice(0, 4).map((ev) => (
-                  <Link
-                    key={ev.id}
-                    to={`/app/student/events/${ev.id}`}
-                    className="flex items-center justify-between gap-4 py-3.5 hover:bg-slate-50/70 -mx-2 px-2 rounded-lg transition-colors"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-slate-900">{ev.title}</p>
-                      <p className="mt-0.5 text-xs text-slate-500">
-                        {ev.clubName} · {ev.category} · {new Date(ev.startTime).toLocaleDateString()} · {ev.venue}
-                      </p>
-                    </div>
-                    <span className="font-mono text-xs font-medium text-slate-600 tabular-nums shrink-0">
-                      {ev.registeredCount}/{ev.capacity}
-                    </span>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </Card>
         </div>
 
         {/* Announcements, Recent Registrations, Quick Actions */}
@@ -217,8 +278,14 @@ export const StudentDashboardPage: React.FC = () => {
                 {registrations.slice(0, 3).map((reg) => (
                   <div key={reg.id} className="border-b border-slate-100 pb-3 last:border-0 last:pb-0">
                     <p className="text-sm font-medium text-slate-900">{reg.eventTitle}</p>
-                    <div className="mt-1 flex items-center justify-between gap-2">
-                      <span className="font-mono text-xs text-slate-500">{reg.qrToken}</span>
+                    <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-mono text-xs text-slate-500">
+                        {reg.ticketStatus === 'released' && reg.qrToken
+                          ? reg.ticketCode || reg.qrToken
+                          : reg.ticketStatus === 'revoked'
+                            ? 'Ticket revoked'
+                            : 'Ticket pending release'}
+                      </span>
                       <StatusLabel status={reg.status} />
                     </div>
                   </div>

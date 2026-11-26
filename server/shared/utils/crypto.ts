@@ -55,7 +55,55 @@ export function verifySessionToken(token: string): SignedSessionPayload | null {
  * Contains zero student name, email, or personal identifiers.
  */
 export function generateOpaqueQrToken(): string {
-  return `CV-QR-${crypto.randomBytes(12).toString('base64url').toUpperCase()}`;
+  return `CV-TCK-${crypto.randomBytes(16).toString('base64url').toUpperCase()}`;
+}
+
+export function generateTicketCode(): string {
+  return `TCK-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
+}
+
+function getTicketCipherKey(): Buffer {
+  return crypto.createHash('sha256').update(env.ticketEncryptionKey).digest();
+}
+
+export function sealTicketToken(rawToken: string): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', getTicketCipherKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(rawToken, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString('base64url')}.${tag.toString('base64url')}.${encrypted.toString('base64url')}`;
+}
+
+export function unsealTicketToken(sealed: string | null | undefined): string {
+  if (!sealed) return '';
+  const parts = sealed.split('.');
+  if (parts.length !== 3) return '';
+  try {
+    const [ivB64, tagB64, dataB64] = parts;
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      getTicketCipherKey(),
+      Buffer.from(ivB64, 'base64url'),
+    );
+    decipher.setAuthTag(Buffer.from(tagB64, 'base64url'));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(dataB64, 'base64url')),
+      decipher.final(),
+    ]);
+    return decrypted.toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+export function rupeesToMinorUnits(rupees: number | string): number {
+  const num = typeof rupees === 'number' ? rupees : Number(rupees);
+  if (!Number.isFinite(num) || num < 0) return 0;
+  return Math.round(num * 100);
+}
+
+export function minorUnitsToRupees(minorUnits: number): number {
+  return Math.trunc(minorUnits) / 100;
 }
 
 export function generateInvitationToken(): string {
@@ -76,3 +124,4 @@ export function escapeCsvCell(value: unknown): string {
   const escaped = formulaSafe.replace(/"/g, '""');
   return `"${escaped}"`;
 }
+

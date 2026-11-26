@@ -5,6 +5,7 @@ import {
   auditLogs,
   clubs,
   eventForms,
+  eventFormVersions,
   events,
   formFields,
   hallOfFameSnapshots,
@@ -28,6 +29,7 @@ const SEED_CLUBS = [
     foundedYear: 2018,
     meetingSchedule: 'Wednesdays & Saturdays · 17:30 · Innovation Hangar B2',
     contactEmail: 'robotics@vitbhopal.ac.in',
+    instagramUrl: 'https://www.instagram.com/apexroboticslab/',
   },
   {
     id: '11111111-1111-4111-8111-111111111102',
@@ -42,6 +44,7 @@ const SEED_CLUBS = [
     foundedYear: 2020,
     meetingSchedule: 'Thursdays · 18:00 · Studio Annex 104',
     contactEmail: 'atelier@vitbhopal.ac.in',
+    instagramUrl: 'https://www.instagram.com/atelierdesignguild/',
   },
   {
     id: '11111111-1111-4111-8111-111111111103',
@@ -56,6 +59,7 @@ const SEED_CLUBS = [
     foundedYear: 2016,
     meetingSchedule: 'Fridays · 18:30 · Performing Arts Hall',
     contactEmail: 'resonance@vitbhopal.ac.in',
+    instagramUrl: 'https://www.instagram.com/resonanceacoustic/',
   },
   {
     id: '11111111-1111-4111-8111-111111111104',
@@ -304,7 +308,7 @@ async function runSeed() {
             maxClubsPerStudent: 2,
             requireClubApproval: true,
             allowStudentEventFeedback: true,
-            phaseLabel: 'Phase 2 — Production PostgreSQL & Supabase Auth',
+            phaseLabel: 'Phase 5 — Production Tickets, Verification, Reports & Finance',
             persistenceMode: 'postgres',
           },
         })
@@ -325,6 +329,7 @@ async function runSeed() {
             contactEmail: club.contactEmail,
             foundedYear: club.foundedYear,
             meetingSchedule: club.meetingSchedule,
+            instagramUrl: 'instagramUrl' in club ? club.instagramUrl : '',
             status: club.status,
             followerCount: 0,
           })
@@ -364,6 +369,8 @@ async function runSeed() {
             id: formSpec.formId,
             eventId: formSpec.eventId,
             version: 1,
+            publishedVersion: 1,
+            status: 'published',
             title: 'Event Registration Form',
             description: 'Standard participant registration details',
           })
@@ -393,6 +400,28 @@ async function runSeed() {
                 target: [formFields.formId, formFields.fieldKey],
               });
           }
+
+          // Ensure seeded published events have an immutable published v1 snapshot
+          await tx
+            .insert(eventFormVersions)
+            .values({
+              formId: existingForm[0].id,
+              eventId: formSpec.eventId,
+              version: 1,
+              title: existingForm[0].title,
+              description: existingForm[0].description || '',
+              schemaSnapshot: formSpec.fields.map((f) => ({
+                id: f.fieldKey,
+                label: f.label,
+                type: f.fieldType,
+                required: f.required,
+                placeholder: f.placeholder || undefined,
+                options: f.options.length > 0 ? [...f.options] : undefined,
+              })),
+            })
+            .onConflictDoNothing({
+              target: [eventFormVersions.eventId, eventFormVersions.version],
+            });
         }
       }
 

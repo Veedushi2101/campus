@@ -16,7 +16,16 @@ export type EventStatus =
   | 'registration_closed'
   | 'completed'
   | 'cancelled';
-export type RegistrationStatus = 'confirmed' | 'waitlisted' | 'cancelled' | 'attended';
+export type RegistrationStatus = 'pending' | 'confirmed' | 'waitlisted' | 'cancelled' | 'attended';
+export type TicketStatus = 'not_released' | 'released' | 'revoked';
+export type EventReportStatus =
+  | 'draft'
+  | 'submitted'
+  | 'under_review'
+  | 'changes_requested'
+  | 'approved'
+  | 'rejected';
+export type FinanceEntryType = 'income' | 'expense';
 export type FormFieldType = FormFieldTypeValue;
 export type FormAnswerValue = string | boolean | number | string[];
 export type InvitationStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
@@ -98,6 +107,7 @@ export interface Club {
   foundedYear: number;
   meetingSchedule: string;
   contactEmail: string;
+  instagramUrl?: string;
   createdAt: string;
 }
 
@@ -145,6 +155,8 @@ export interface EventItem {
   feeAmount: number;
   feeMinorUnits?: number;
   eligibilityRules?: EventEligibilityRules;
+  ticketsReleasedAt?: string | null;
+  ticketsReleasedBy?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -201,6 +213,35 @@ export interface QrCredential {
   usedAt: string | null;
 }
 
+export interface TicketRecord {
+  id: string;
+  registrationId: string;
+  eventId: string;
+  userId: string;
+  studentName?: string;
+  studentEmail?: string;
+  registrationStatus?: RegistrationStatus;
+  ticketCode: string;
+  status: TicketStatus;
+  qrToken?: string;
+  releasedBy?: string | null;
+  releasedAt?: string | null;
+  revokedBy?: string | null;
+  revokedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TicketReleaseSummary {
+  eventId: string;
+  releasedCount: number;
+  alreadyReleasedCount: number;
+  totalReleased: number;
+  eligibleCount: number;
+  ticketsReleasedAt: string;
+  emailDelivery: 'not_configured' | 'sent' | 'partial';
+}
+
 export interface Registration {
   id: string;
   eventId: string;
@@ -216,6 +257,9 @@ export interface Registration {
   formVersionId?: string | null;
   answers: Record<string, FormAnswerValue>;
   status: RegistrationStatus;
+  ticketStatus?: TicketStatus;
+  ticketCode?: string;
+  ticketReleasedAt?: string | null;
   attendanceStatus?: 'present' | 'not_checked_in';
   waitlistPosition?: number | null;
   qrToken: string;
@@ -237,6 +281,26 @@ export interface AttendanceRecord {
   checkedInAt: string;
 }
 
+export interface AttendanceSummary {
+  eventId: string;
+  confirmedCount: number;
+  ticketsReleasedCount: number;
+  ticketsNotReleasedCount: number;
+  attendedCount: number;
+  remainingCount: number;
+  attendancePercentage: number;
+}
+
+export interface EventReportHistoryEntry {
+  action: string;
+  status: EventReportStatus;
+  actorId: string;
+  actorName: string;
+  actorRole: string;
+  notes?: string;
+  timestamp: string;
+}
+
 export interface EventReport {
   id: string;
   eventId: string;
@@ -246,12 +310,25 @@ export interface EventReport {
   submittedBy: string;
   submittedByName: string;
   outcomeSummary: string;
+  objectives?: string;
+  actualEventDate?: string;
+  participationSummary?: string;
+  outcomes?: string;
   highlights: string;
   challenges: string;
+  feedbackObservations?: string;
+  evidenceUrl?: string;
   actualAttendance: number;
   registeredTotal: number;
   completionStatus: 'completed' | 'partial';
+  status: EventReportStatus;
+  reviewedBy?: string | null;
+  reviewedByName?: string | null;
+  reviewedAt?: string | null;
+  reviewNotes?: string;
+  history?: EventReportHistoryEntry[];
   submittedAt: string;
+  updatedAt?: string;
 }
 
 export interface FinancialLineItem {
@@ -274,9 +351,71 @@ export interface FinancialReport {
   totalCollections: number;
   totalExpenses: number;
   netBalance: number;
+  totalCollectionsMinorUnits?: number;
+  totalExpensesMinorUnits?: number;
+  netBalanceMinorUnits?: number;
   lineItems: FinancialLineItem[];
   notes: string;
   submittedAt: string;
+}
+
+export interface FinanceEntry {
+  id: string;
+  clubId: string;
+  clubName?: string;
+  eventId?: string | null;
+  eventTitle?: string | null;
+  entryType: FinanceEntryType;
+  sourceOrCategory: string;
+  description: string;
+  amountMinorUnits: number;
+  amount: number;
+  transactionDate: string;
+  vendorOrRecipient: string;
+  receiptUrl?: string;
+  notes?: string;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FinanceClubSummary {
+  clubId: string;
+  clubName: string;
+  totalIncomeMinorUnits: number;
+  totalExpensesMinorUnits: number;
+  netBalanceMinorUnits: number;
+  totalIncome: number;
+  totalExpenses: number;
+  netBalance: number;
+  entryCount: number;
+}
+
+export interface FinanceEventSummary {
+  eventId: string;
+  eventTitle: string;
+  clubId: string;
+  clubName: string;
+  totalIncomeMinorUnits: number;
+  totalExpensesMinorUnits: number;
+  netBalanceMinorUnits: number;
+  totalIncome: number;
+  totalExpenses: number;
+  netBalance: number;
+  entryCount: number;
+}
+
+export interface FinanceSummaryResponse {
+  entries: FinanceEntry[];
+  totalIncomeMinorUnits: number;
+  totalExpensesMinorUnits: number;
+  netBalanceMinorUnits: number;
+  totalIncome: number;
+  totalExpenses: number;
+  netBalance: number;
+  byClub?: FinanceClubSummary[];
+  byEvent?: FinanceEventSummary[];
 }
 
 export interface NotificationItem {
@@ -316,11 +455,53 @@ export interface AdminDashboardStats {
   activeClubs: number;
   totalEvents: number;
   upcomingEvents: number;
+  completedEvents: number;
   totalRegistrations: number;
+  totalAttendance: number;
+  pendingReportsCount: number;
+  awaitingApprovalReportsCount: number;
   totalCollections: number;
   totalExpenses: number;
   netBalance: number;
   recentAuditLogs: AuditLogEntry[];
+}
+
+export interface ClubOverviewItem {
+  club: Club;
+  presidentName: string | null;
+  presidentEmail: string | null;
+  vicePresidentName: string | null;
+  vicePresidentEmail: string | null;
+  activeCoreCount: number;
+  totalMembersCount: number;
+  upcomingEventsCount: number;
+  completedEventsCount: number;
+}
+
+export interface EventAnalyticsItem {
+  eventId: string;
+  title: string;
+  clubId: string;
+  clubName: string;
+  status: EventStatus;
+  startTime: string;
+  venue: string;
+  capacity: number;
+  confirmedCount: number;
+  waitlistedCount: number;
+  ticketsReleasedCount: number;
+  ticketsNotReleasedCount: number;
+  attendedCount: number;
+  attendancePercentage: number;
+  reportStatus: EventReportStatus | 'not_submitted';
+  totalIncome: number;
+  totalExpenses: number;
+  netBalance: number;
+}
+
+export interface AdminAnalyticsResponse {
+  clubs: ClubOverviewItem[];
+  events: EventAnalyticsItem[];
 }
 
 export interface SystemSettings {

@@ -572,18 +572,6 @@ export class EventsRepository {
         );
       }
 
-      // Auto-publish registration form snapshot if the event is going live and no snapshot exists yet
-      if (targetStatus === 'published' || targetStatus === 'registration_open') {
-        const [formRow] = await tx
-          .select({publishedVersion: eventForms.publishedVersion})
-          .from(eventForms)
-          .where(eq(eventForms.eventId, existing.id))
-          .limit(1);
-        if (!formRow || formRow.publishedVersion === 0) {
-          await this.ensurePublishedSnapshotTx(tx, existing, dbRequestContext.get().userId);
-        }
-      }
-
       const [saved] = await tx
         .update(events)
         .set({

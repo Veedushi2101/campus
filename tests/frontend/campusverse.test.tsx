@@ -14,6 +14,9 @@ import {AcceptInvitePage} from '../../src/pages/public/AcceptInvitePage.tsx';
 import {LandingPage} from '../../src/pages/public/LandingPage.tsx';
 import {LoginPage} from '../../src/pages/public/LoginPage.tsx';
 import {HallOfFamePage} from '../../src/pages/student/HallOfFamePage.tsx';
+import {MyRegistrationsPage} from '../../src/pages/student/MyRegistrationsPage.tsx';
+import {StudentDashboardPage} from '../../src/pages/student/StudentDashboardPage.tsx';
+import {SafeExternalLink} from '../../src/components/ui/Feedback.tsx';
 
 vi.mock('../../src/adapters/ApiDataAdapter.ts', async () => {
   const actual = await vi.importActual<typeof import('../../src/adapters/ApiDataAdapter.ts')>(
@@ -356,15 +359,134 @@ describe('CampusVerse Phase 3 & Phase 4 Frontend Workflows', () => {
     }
   });
 
-  it('renders ClubRegistrationsPage and AttendancePage Phase 4 export & gate controls', async () => {
+  it('renders ClubRegistrationsPage and AttendancePage Phase 5 ticket release, metrics & scanner controls', async () => {
     renderWithProviders(<ClubRegistrationsPage />);
-    expect(await screen.findByText(/Participant Directory & Registrations/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Participant Directory & Ticket Management/i)).toBeInTheDocument();
     expect(screen.getByRole('button', {name: /Export CSV/i})).toBeInTheDocument();
     cleanup();
 
     renderWithProviders(<AttendancePage />);
     expect(await screen.findByText(/Attendance & QR Check-In Gate/i)).toBeInTheDocument();
     expect(screen.getByRole('button', {name: /Export Attendance CSV/i})).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: /Open QR Scanner/i})).toBeInTheDocument();
     expect(screen.getByRole('button', {name: /Verify & Check In/i})).toBeInTheDocument();
+    expect(screen.getByText('Confirmed')).toBeInTheDocument();
+    expect(screen.getByText('Tickets Released')).toBeInTheDocument();
+    expect(screen.getByText('Not Released')).toBeInTheDocument();
+    expect(screen.getByText('Checked In')).toBeInTheDocument();
+    expect(screen.getByText('Remaining')).toBeInTheDocument();
+    expect(screen.getByText('Attendance %')).toBeInTheDocument();
+  });
+
+  it('SafeExternalLink renders canonical Instagram links safely and suppresses javascript: XSS URIs', () => {
+    render(
+      <div>
+        <SafeExternalLink href="https://www.instagram.com/apexroboticslab/">
+          Instagram Profile
+        </SafeExternalLink>
+        <SafeExternalLink href="javascript:alert(1)">Blocked XSS Link</SafeExternalLink>
+      </div>,
+    );
+
+    const safeAnchor = screen.getByRole('link', {name: 'Instagram Profile'});
+    expect(safeAnchor).toHaveAttribute('href', 'https://www.instagram.com/apexroboticslab/');
+    expect(safeAnchor).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.queryByText('Blocked XSS Link')).not.toBeInTheDocument();
+  });
+
+  it('MyRegistrationsPage hides QR pass when ticketStatus is not_released and reveals it only when released', async () => {
+    const regSpy = vi.spyOn(apiClient, 'listMyRegistrations').mockResolvedValue([
+      {
+        id: 'reg-unreleased',
+        eventId: 'evt-1',
+        eventTitle: 'Unreleased Ticket Event',
+        eventStartTime: '2026-12-20T10:00:00Z',
+        eventVenue: 'Hall 1',
+        clubId: 'club-1',
+        clubName: 'Apex Robotics Lab',
+        studentId: 'stu-1',
+        studentName: 'Aarav Mehta',
+        studentEmail: 'aarav@campusverse.edu',
+        answers: {},
+        status: 'confirmed',
+        ticketStatus: 'not_released',
+        ticketCode: 'TCK-PEND-1',
+        qrToken: '',
+        qrUsedAt: null,
+        createdAt: '2026-11-20T10:00:00Z',
+      },
+      {
+        id: 'reg-released',
+        eventId: 'evt-2',
+        eventTitle: 'Released Ticket Event',
+        eventStartTime: '2026-12-21T10:00:00Z',
+        eventVenue: 'Hall 2',
+        clubId: 'club-1',
+        clubName: 'Apex Robotics Lab',
+        studentId: 'stu-1',
+        studentName: 'Aarav Mehta',
+        studentEmail: 'aarav@campusverse.edu',
+        answers: {},
+        status: 'confirmed',
+        ticketStatus: 'released',
+        ticketCode: 'TCK-REL-2',
+        qrToken: 'CV-TCK-TEST12345678',
+        qrUsedAt: null,
+        createdAt: '2026-11-20T11:00:00Z',
+      },
+    ]);
+
+    try {
+      renderWithProviders(<MyRegistrationsPage />);
+      expect(await screen.findByText('Unreleased Ticket Event')).toBeInTheDocument();
+      expect(screen.getByText('Released Ticket Event')).toBeInTheDocument();
+      expect(screen.getByText(/Ticket pending release/i)).toBeInTheDocument();
+      expect(screen.getAllByRole('button', {name: /Open QR Pass/i})).toHaveLength(1);
+    } finally {
+      regSpy.mockRestore();
+    }
+  });
+
+  it('StudentDashboardPage renders Active Events feed from paginated API', async () => {
+    const eventsSpy = vi.spyOn(apiClient, 'listEventsPaginated').mockResolvedValue({
+      items: [
+        {
+          id: 'evt-active-1',
+          clubId: 'club-robotics',
+          clubName: 'Apex Robotics Lab',
+          title: 'Active Rover Build Sprint',
+          category: 'Workshop',
+          description: 'Live active event',
+          venue: 'Hangar B2',
+          startTime: '2026-12-20T10:00:00Z',
+          endTime: '2026-12-20T14:00:00Z',
+          registrationDeadline: '2026-12-19T23:59:00Z',
+          capacity: 50,
+          registeredCount: 12,
+          attendedCount: 0,
+          status: 'registration_open',
+          bannerUrl: '',
+          isPaid: false,
+          feeAmount: 0,
+          createdAt: '2026-11-20T00:00:00Z',
+          updatedAt: '2026-11-20T00:00:00Z',
+        },
+      ],
+      pagination: {page: 1, pageSize: 6, total: 1, totalPages: 1},
+    });
+    const clubsSpy = vi.spyOn(apiClient, 'listClubs').mockResolvedValue([]);
+    const regsSpy = vi.spyOn(apiClient, 'listMyRegistrations').mockResolvedValue([]);
+    const notifSpy = vi.spyOn(apiClient, 'listNotifications').mockResolvedValue([]);
+
+    try {
+      renderWithProviders(<StudentDashboardPage />);
+      expect(await screen.findByRole('heading', {name: /Active Events/i})).toBeInTheDocument();
+      expect(await screen.findByText('Active Rover Build Sprint')).toBeInTheDocument();
+    } finally {
+      eventsSpy.mockRestore();
+      clubsSpy.mockRestore();
+      regsSpy.mockRestore();
+      notifSpy.mockRestore();
+    }
   });
 });

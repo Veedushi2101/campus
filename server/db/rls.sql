@@ -427,7 +427,7 @@ BEGIN
     v_candidate.user_id,
     'registration',
     'Waitlist Seat Confirmed',
-    'A seat opened up for ' || v_event.title || '. Your registration and QR pass are now active.',
+    'A seat opened up for ' || v_event.title || '. Your registration is confirmed. Your ticket will be available once the club releases tickets.',
     '/app/my-registrations',
     false
   );
@@ -449,10 +449,12 @@ ALTER TABLE public.event_forms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.form_fields ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_form_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.registrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tickets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.attendance_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.finance_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.finance_line_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.finance_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.system_settings ENABLE ROW LEVEL SECURITY;
@@ -821,7 +823,73 @@ CREATE POLICY registrations_update_policy ON public.registrations
     OR EXISTS (
       SELECT 1 FROM public.events e
       WHERE e.id = registrations.event_id
-        AND public.app_has_club_permission(e.club_id, 'SCAN_ATTENDANCE')
+        AND (
+          public.app_has_club_permission(e.club_id, 'SCAN_ATTENDANCE')
+          OR public.app_has_club_permission(e.club_id, 'MANAGE_EVENTS')
+        )
+    )
+  );
+
+-- tickets (Strict participant ownership & event officer release/scan scoping)
+DROP POLICY IF EXISTS tickets_select_policy ON public.tickets;
+CREATE POLICY tickets_select_policy ON public.tickets
+  FOR SELECT USING (
+    public.app_is_super_admin()
+    OR public.app_is_system_auth()
+    OR user_id = public.app_current_user_id()
+    OR EXISTS (
+      SELECT 1 FROM public.events e
+      WHERE e.id = tickets.event_id
+        AND (
+          public.app_has_club_permission(e.club_id, 'MANAGE_EVENTS')
+          OR public.app_has_club_permission(e.club_id, 'VIEW_REGISTRATIONS')
+          OR public.app_has_club_permission(e.club_id, 'SCAN_ATTENDANCE')
+        )
+    )
+  );
+
+DROP POLICY IF EXISTS tickets_insert_policy ON public.tickets;
+CREATE POLICY tickets_insert_policy ON public.tickets
+  FOR INSERT WITH CHECK (
+    public.app_is_super_admin()
+    OR public.app_current_global_role() = 'system_seed'
+    OR user_id = public.app_current_user_id()
+    OR EXISTS (
+      SELECT 1 FROM public.events e
+      WHERE e.id = tickets.event_id
+        AND (
+          public.app_has_club_permission(e.club_id, 'MANAGE_EVENTS')
+          OR public.app_is_club_admin(e.club_id)
+        )
+    )
+  );
+
+DROP POLICY IF EXISTS tickets_update_policy ON public.tickets;
+CREATE POLICY tickets_update_policy ON public.tickets
+  FOR UPDATE USING (
+    public.app_is_super_admin()
+    OR public.app_current_global_role() = 'system_seed'
+    OR EXISTS (
+      SELECT 1 FROM public.events e
+      WHERE e.id = tickets.event_id
+        AND (
+          public.app_has_club_permission(e.club_id, 'MANAGE_EVENTS')
+          OR public.app_has_club_permission(e.club_id, 'SCAN_ATTENDANCE')
+          OR public.app_is_club_admin(e.club_id)
+        )
+    )
+  )
+  WITH CHECK (
+    public.app_is_super_admin()
+    OR public.app_current_global_role() = 'system_seed'
+    OR EXISTS (
+      SELECT 1 FROM public.events e
+      WHERE e.id = tickets.event_id
+        AND (
+          public.app_has_club_permission(e.club_id, 'MANAGE_EVENTS')
+          OR public.app_has_club_permission(e.club_id, 'SCAN_ATTENDANCE')
+          OR public.app_is_club_admin(e.club_id)
+        )
     )
   );
 
@@ -913,6 +981,19 @@ CREATE POLICY finance_line_items_policy ON public.finance_line_items
     )
   );
 
+DROP POLICY IF EXISTS finance_entries_policy ON public.finance_entries;
+CREATE POLICY finance_entries_policy ON public.finance_entries
+  FOR ALL USING (
+    public.app_is_super_admin()
+    OR public.app_current_global_role() = 'system_seed'
+    OR public.app_has_club_permission(club_id, 'SUBMIT_FINANCE_REPORTS')
+  )
+  WITH CHECK (
+    public.app_is_super_admin()
+    OR public.app_current_global_role() = 'system_seed'
+    OR public.app_has_club_permission(club_id, 'SUBMIT_FINANCE_REPORTS')
+  );
+
 -- notifications
 DROP POLICY IF EXISTS notifications_select_policy ON public.notifications;
 CREATE POLICY notifications_select_policy ON public.notifications
@@ -926,6 +1007,19 @@ CREATE POLICY notifications_insert_policy ON public.notifications
     user_id = public.app_current_user_id()
     OR public.app_is_super_admin()
     OR public.app_current_global_role() IN ('system_seed', 'invitation_activator')
+    OR (
+      public.app_current_user_id() IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM public.club_memberships cm
+        WHERE cm.user_id = public.app_current_user_id()
+          AND cm.status = 'active'
+          AND (
+            cm.membership_role IN ('president', 'vice_president')
+            OR cm.permissions @> '["MANAGE_EVENTS"]'::jsonb
+            OR cm.permissions @> '["SUBMIT_EVENT_REPORTS"]'::jsonb
+          )
+      )
+    )
   );
 
 DROP POLICY IF EXISTS notifications_update_policy ON public.notifications;

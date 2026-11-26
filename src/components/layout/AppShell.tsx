@@ -346,6 +346,27 @@ export const AppShell: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0">
+            <div className="flex items-center">
+              <label htmlFor="header-workspace-select" className="sr-only">
+                Switch workspace context
+              </label>
+              <select
+                id="header-workspace-select"
+                aria-label="Switch workspace context"
+                value={currentSelectorValue}
+                onChange={(e) => handleContextSelection(e.target.value)}
+                className="max-w-[190px] truncate rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-800 focus:border-blue-600 focus:bg-white"
+              >
+                {user?.isSuperAdmin && <option value="super_admin">Super Admin · Institution</option>}
+                <option value="student">Student · Campus Discovery</option>
+                {memberships.map((m) => (
+                  <option key={m.id} value={`${m.role}:${m.clubId}`}>
+                    {CLUB_ROLE_LABELS[m.role] || m.role} · {m.clubName || m.clubId}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <form onSubmit={handleGlobalSearch} className="relative hidden md:block">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
               <input

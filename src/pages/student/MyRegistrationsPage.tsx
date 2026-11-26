@@ -106,14 +106,16 @@ export const MyRegistrationsPage: React.FC = () => {
               reg.status === 'attended';
             const canCancel =
               !checkedIn && (reg.status === 'confirmed' || reg.status === 'waitlisted');
+            const isTicketReleased = reg.ticketStatus === 'released' && Boolean(reg.qrToken);
 
             return (
               <Card key={reg.id} className="p-6 flex flex-col justify-between">
                 <div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="text-xs font-medium text-violet-700">{reg.clubName}</span>
-                    <div className="flex items-center gap-2.5">
+                    <div className="flex flex-wrap items-center gap-2.5">
                       <StatusLabel status={reg.status} />
+                      <StatusLabel status={reg.ticketStatus || 'not_released'} />
                       {reg.status === 'waitlisted' && reg.waitlistPosition ? (
                         <span className="font-mono text-xs font-semibold text-amber-800">
                           #{reg.waitlistPosition}
@@ -124,7 +126,7 @@ export const MyRegistrationsPage: React.FC = () => {
                           <CheckCircle2 className="h-3.5 w-3.5" />
                           Checked In
                         </span>
-                      ) : reg.status === 'confirmed' ? (
+                      ) : reg.status === 'confirmed' && isTicketReleased ? (
                         <span className="inline-flex items-center gap-1 text-xs text-slate-500">
                           <Clock className="h-3.5 w-3.5" />
                           Pending Scan
@@ -155,7 +157,13 @@ export const MyRegistrationsPage: React.FC = () => {
                 </div>
 
                 <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4">
-                  <span className="font-mono text-xs text-slate-600">{reg.qrToken}</span>
+                  <span className="font-mono text-xs text-slate-600">
+                    {isTicketReleased
+                      ? reg.ticketCode || reg.qrToken
+                      : reg.ticketStatus === 'revoked'
+                        ? 'Ticket revoked'
+                        : 'Ticket pending release'}
+                  </span>
                   <div className="flex items-center gap-2">
                     {canCancel && (
                       <Button
@@ -166,10 +174,19 @@ export const MyRegistrationsPage: React.FC = () => {
                         Cancel
                       </Button>
                     )}
-                    <Button size="sm" variant="outline" onClick={() => setSelectedPass(reg)}>
-                      <QrCode className="h-3.5 w-3.5" />
-                      Open QR Pass
-                    </Button>
+                    {isTicketReleased ? (
+                      <Button size="sm" variant="outline" onClick={() => setSelectedPass(reg)}>
+                        <QrCode className="h-3.5 w-3.5" />
+                        Open QR Pass
+                      </Button>
+                    ) : (
+                      <Link
+                        to={`/app/student/events/${reg.eventId}`}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        View Status
+                      </Link>
+                    )}
                   </div>
                 </div>
               </Card>
@@ -186,14 +203,30 @@ export const MyRegistrationsPage: React.FC = () => {
       >
         {selectedPass && (
           <div className="flex flex-col items-center text-center">
-            <div className="rounded-xl border border-slate-200 bg-white p-5">
-              <QRCodeSVG value={selectedPass.qrToken} size={184} level="M" />
-            </div>
-            <p className="mt-4 font-mono text-base font-semibold text-slate-900">
-              {selectedPass.qrToken}
-            </p>
+            {selectedPass.ticketStatus === 'released' && selectedPass.qrToken ? (
+              <>
+                <div className="rounded-xl border border-slate-200 bg-white p-5">
+                  <QRCodeSVG value={selectedPass.qrToken} size={184} level="M" />
+                </div>
+                {selectedPass.ticketCode && (
+                  <p className="mt-3 font-mono text-xs font-medium text-slate-600">
+                    Ticket Code: {selectedPass.ticketCode}
+                  </p>
+                )}
+                <p className="mt-1 font-mono text-base font-semibold text-slate-900">
+                  {selectedPass.qrToken}
+                </p>
+              </>
+            ) : (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+                {selectedPass.ticketStatus === 'revoked'
+                  ? 'This ticket has been revoked by club organizers.'
+                  : 'Tickets have not been released for this event yet.'}
+              </div>
+            )}
             <div className="mt-2 flex items-center gap-2">
               <StatusLabel status={selectedPass.status} />
+              <StatusLabel status={selectedPass.ticketStatus || 'not_released'} />
               {selectedPass.status === 'waitlisted' && selectedPass.waitlistPosition ? (
                 <span className="font-mono text-xs text-amber-800">
                   Waitlist #{selectedPass.waitlistPosition}

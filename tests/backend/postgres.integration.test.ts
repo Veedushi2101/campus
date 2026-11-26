@@ -74,8 +74,9 @@ describe.skipIf(!hasLiveDatabase)(
         SELECT tablename, rowsecurity
         FROM pg_tables
         WHERE schemaname = 'public'
-          AND tablename IN ('users', 'clubs', 'registrations', 'attendance_records', 'finance_reports', 'audit_logs')
+          AND tablename IN ('users', 'clubs', 'registrations', 'tickets', 'attendance_records', 'event_reports', 'finance_reports', 'finance_entries', 'audit_logs')
       `;
+      expect(rlsTables).toHaveLength(9);
       expect(rlsTables.every((t) => t.rowsecurity === true)).toBe(true);
     });
 
@@ -272,9 +273,19 @@ describe.skipIf(!hasLiveDatabase)(
       expect(dupResults[0].status).toBe('rejected');
       expect((dupResults[0] as PromiseRejectedResult).reason.statusCode).toBe(409);
 
-      // 6. Simultaneous double-scan of confirmed QR token -> strictly 1 attendance record, 1 rejected with 409
+      // 6. Release confirmed ticket, then simultaneous double-scan of QR token -> strictly 1 attendance record, 1 rejected with 409
       const confirmedReg = regA.status === 'confirmed' ? regA : regB;
       const confirmedStudent = regA.status === 'confirmed' ? studentA : studentB;
+      await dbRequestContext.run({userId: '', globalRole: 'super_admin'}, () =>
+        adapter.releaseEventTickets(event.id, {id: studentA.id, name: 'Test Admin'}),
+      );
+      const confirmedTickets = await dbRequestContext.run(
+        {userId: confirmedStudent.id, globalRole: 'user'},
+        () => adapter.listStudentTickets(confirmedStudent.id),
+      );
+      const releasedQrToken =
+        confirmedTickets.find((t) => t.registrationId === confirmedReg.id)?.qrToken ||
+        confirmedReg.qrToken;
       const scanResults = await Promise.allSettled([
         dbRequestContext.run({userId: '', globalRole: 'super_admin'}, () =>
           adapter.recordAttendance({
@@ -283,7 +294,7 @@ describe.skipIf(!hasLiveDatabase)(
             studentId: confirmedStudent.id,
             studentName: confirmedStudent.name,
             studentCode: confirmedStudent.studentId,
-            qrToken: confirmedReg.qrToken,
+            qrToken: releasedQrToken,
             method: 'qr_scan',
             checkedInBy: 'Gate Scanner 1',
           }),
@@ -295,7 +306,7 @@ describe.skipIf(!hasLiveDatabase)(
             studentId: confirmedStudent.id,
             studentName: confirmedStudent.name,
             studentCode: confirmedStudent.studentId,
-            qrToken: confirmedReg.qrToken,
+            qrToken: releasedQrToken,
             method: 'qr_scan',
             checkedInBy: 'Gate Scanner 2',
           }),
@@ -863,6 +874,255 @@ describe.skipIf(!hasLiveDatabase)(
         );
         const invitePlanText = explainInvite.map((r) => r['QUERY PLAN']).join('\n');
         expect(invitePlanText).toContain('Execution Time');
+      },
+      30000,
+    );
+
+    it(
+      'Phase 5: persists controlled ticket release hashes, RLS on tickets/finance_entries, report review history, and integer-paise finance summaries',
+      async () => {
+        const adapter = new PostgresDataAdapter();
+        const client = getSqlClient();
+
+        const [leader, stu1, stu2] = await Promise.all([
+          adapter.provisionAuthenticatedUser({
+            authUserId: crypto.randomUUID(),
+            email: `p5.leader.${testRunSuffix}@vitbhopal.ac.in`,
+            name: 'P5 Club Leader',
+            emailVerified: true,
+            isBootstrapSuperAdmin: false,
+          }),
+          adapter.provisionAuthenticatedUser({
+            authUserId: crypto.randomUUID(),
+            email: `p5.stu1.${testRunSuffix}@vitbhopal.ac.in`,
+            name: 'P5 Student One',
+            emailVerified: true,
+            isBootstrapSuperAdmin: false,
+          }),
+          adapter.provisionAuthenticatedUser({
+            authUserId: crypto.randomUUID(),
+            email: `p5.stu2.${testRunSuffix}@vitbhopal.ac.in`,
+            name: 'P5 Student Two',
+            emailVerified: true,
+            isBootstrapSuperAdmin: false,
+          }),
+        ]);
+        createdUserIds.push(leader.id, stu1.id, stu2.id);
+
+        const p5Club = await dbRequestContext.run({userId: '', globalRole: 'super_admin'}, async () => {
+          const c = await adapter.createClub({
+            name: `P5 Full Cycle Guild ${testRunSuffix}`,
+            category: 'Robotics & Hardware',
+            tagline: 'Phase 5 PostgreSQL ticket, report, Instagram & integer-paise ledger check.',
+            description:
+              'Automated Phase 5 live PostgreSQL test validating ticket hashes, RLS isolation, report review history, and minor-unit finance.',
+            meetingSchedule: 'Saturdays · 15:00',
+            contactEmail: `p5club.${testRunSuffix}@vitbhopal.ac.in`,
+            instagramUrl: 'https://www.instagram.com/p5fullcycle/',
+            status: 'active',
+          });
+          await adapter.upsertClubMembership({
+            clubId: c.id,
+            userId: leader.id,
+            role: 'president',
+            title: 'Club President',
+            permissions: [
+              'MANAGE_EVENTS',
+              'MANAGE_FORMS',
+              'VIEW_REGISTRATIONS',
+              'SCAN_ATTENDANCE',
+              'SUBMIT_EVENT_REPORTS',
+              'SUBMIT_FINANCE_REPORTS',
+            ],
+            strictInsert: true,
+          });
+          return c;
+        });
+        createdClubIds.push(p5Club.id);
+        expect(p5Club.instagramUrl).toBe('https://www.instagram.com/p5fullcycle/');
+
+        const p5Event = await dbRequestContext.run({userId: leader.id, globalRole: 'user'}, async () => {
+          const ev = await adapter.createEvent(p5Club.id, {
+            title: `P5 Ticket Release Event ${testRunSuffix}`,
+            category: 'Workshop',
+            description: 'Testing Postgres ticket release, QR token hashing, report review & finance.',
+            venue: 'Hangar Lab 5',
+            startTime: '2026-12-30T10:00:00.000Z',
+            endTime: '2026-12-30T13:00:00.000Z',
+            registrationDeadline: '2026-12-29T23:59:00.000Z',
+            capacity: 25,
+            isPaid: false,
+            feeAmount: 0,
+          });
+          await adapter.upsertRegistrationForm(ev.id, [
+            {id: 'badge', label: 'Badge Handle', type: 'text', required: true},
+          ]);
+          await adapter.publishRegistrationForm(ev.id, leader.id);
+          return (await adapter.publishEvent(ev.id))!;
+        });
+
+        // Register student 1 -> starts as not_released with no usable QR token
+        const reg = await dbRequestContext.run({userId: stu1.id, globalRole: 'user'}, () =>
+          adapter.createRegistration({
+            eventId: p5Event.id,
+            studentId: stu1.id,
+            studentName: stu1.name,
+            studentEmail: stu1.email,
+            answers: {badge: 'P5-ALPHA'},
+            qrToken: '',
+            formVersion: 1,
+          }),
+        );
+        expect(reg.ticketStatus).toBe('not_released');
+        expect(reg.qrToken).toBe('');
+
+        // Batch release tickets transactionally -> idempotent on second call
+        const relSummary = await dbRequestContext.run({userId: leader.id, globalRole: 'user'}, () =>
+          adapter.releaseEventTickets(p5Event.id, {id: leader.id, name: leader.name}),
+        );
+        expect(relSummary.releasedCount).toBe(1);
+
+        const relAgain = await dbRequestContext.run({userId: leader.id, globalRole: 'user'}, () =>
+          adapter.releaseEventTickets(p5Event.id, {id: leader.id, name: leader.name}),
+        );
+        expect(relAgain.releasedCount).toBe(0);
+        expect(relAgain.alreadyReleasedCount).toBe(1);
+
+        // Student 1 sees their unsealed CV-TCK token; DB stores hash only (never plaintext in token_hash or registrations.qr_token)
+        const stu1Tickets = await dbRequestContext.run({userId: stu1.id, globalRole: 'user'}, () =>
+          adapter.listStudentTickets(stu1.id),
+        );
+        const releasedTicket = stu1Tickets.find((t) => t.eventId === p5Event.id)!;
+        expect(releasedTicket.status).toBe('released');
+        expect(releasedTicket.qrToken).toMatch(/^CV-TCK-/);
+
+        // RLS under campusverse_app: Student 2 cannot read Student 1's ticket or club finance_entries
+        await client.begin(async (tx) => {
+          await tx.unsafe(`SET LOCAL ROLE campusverse_app`);
+          await tx`SELECT set_config('app.current_user_id', ${stu2.id}, true), set_config('app.current_global_role', 'user', true)`;
+
+          const otherTickets = await tx`SELECT id FROM public.tickets WHERE event_id = ${p5Event.id}`;
+          expect(otherTickets).toHaveLength(0);
+
+          const clubFin = await tx`SELECT id FROM public.finance_entries WHERE club_id = ${p5Club.id}`;
+          expect(clubFin).toHaveLength(0);
+        });
+
+        // Verify plaintext CV-TCK- token is NOT stored in registrations.qr_token or tickets.token_hash
+        const rawDbTicketRows = await client.begin(async (tx) => {
+          await tx`SELECT set_config('app.current_global_role', 'super_admin', true)`;
+          return tx<Array<{token_hash: string; qr_token: string}>>`
+            SELECT t.token_hash, r.qr_token
+            FROM public.tickets t
+            JOIN public.registrations r ON r.id = t.registration_id
+            WHERE t.id = ${releasedTicket.id}
+          `;
+        });
+        expect(rawDbTicketRows[0].token_hash).toBe(hashSha256(releasedTicket.qrToken!));
+        expect(rawDbTicketRows[0].qr_token).not.toBe(releasedTicket.qrToken!);
+
+        // QR token lookup & attendance summary metrics
+        const matchedReg = await dbRequestContext.run({userId: leader.id, globalRole: 'user'}, () =>
+          adapter.getRegistrationByQrToken(p5Event.id, releasedTicket.qrToken!),
+        );
+        expect(matchedReg?.id).toBe(reg.id);
+
+        await dbRequestContext.run({userId: leader.id, globalRole: 'user'}, () =>
+          adapter.recordAttendance({
+            eventId: p5Event.id,
+            registrationId: reg.id,
+            studentId: stu1.id,
+            studentName: stu1.name,
+            studentCode: stu1.studentId,
+            qrToken: releasedTicket.qrToken!,
+            method: 'qr_scan',
+            checkedInBy: leader.name,
+            scannedByUserId: leader.id,
+          }),
+        );
+
+        const attSummary = await dbRequestContext.run({userId: leader.id, globalRole: 'user'}, () =>
+          adapter.getAttendanceSummary(p5Event.id),
+        );
+        expect(attSummary).toMatchObject({
+          confirmedCount: 1,
+          ticketsReleasedCount: 1,
+          ticketsNotReleasedCount: 0,
+          attendedCount: 1,
+          remainingCount: 0,
+          attendancePercentage: 100,
+        });
+
+        // Integer-paise finance entries & summary calculation
+        await dbRequestContext.run({userId: leader.id, globalRole: 'user'}, async () => {
+          await adapter.createFinanceEntry({
+            clubId: p5Club.id,
+            eventId: p5Event.id,
+            entryType: 'income',
+            sourceOrCategory: 'Sponsor Grant',
+            description: 'Main event sponsorship',
+            amountMinorUnits: 250050,
+            transactionDate: '2026-12-20',
+            vendorOrRecipient: 'Campus Tech Sponsor',
+            createdBy: leader.id,
+            createdByName: leader.name,
+          });
+          await adapter.createFinanceEntry({
+            clubId: p5Club.id,
+            eventId: p5Event.id,
+            entryType: 'expense',
+            sourceOrCategory: 'Printing',
+            description: 'Workshop manuals',
+            amountMinorUnits: 100025,
+            transactionDate: '2026-12-21',
+            vendorOrRecipient: 'Campus Print Shop',
+            createdBy: leader.id,
+            createdByName: leader.name,
+          });
+        });
+
+        const clubFinance = await dbRequestContext.run({userId: leader.id, globalRole: 'user'}, () =>
+          adapter.getFinanceSummary({clubId: p5Club.id}),
+        );
+        expect(clubFinance.totalIncomeMinorUnits).toBe(250050);
+        expect(clubFinance.totalExpensesMinorUnits).toBe(100025);
+        expect(clubFinance.netBalanceMinorUnits).toBe(150025);
+
+        // Structured post-event report + Super Admin review history persistence
+        const report = await dbRequestContext.run({userId: leader.id, globalRole: 'user'}, () =>
+          adapter.upsertEventReport({
+            eventId: p5Event.id,
+            eventTitle: p5Event.title,
+            clubId: p5Club.id,
+            clubName: p5Club.name,
+            submittedBy: leader.id,
+            submittedByName: leader.name,
+            actorRole: 'Club President',
+            outcomeSummary: 'All participants completed the P5 robotics integration lab.',
+            objectives: 'Verify real PostgreSQL ticket release & attendance flow.',
+            actualEventDate: '2026-12-30',
+            participationSummary: '1 of 1 confirmed attendees verified via QR.',
+            outcomes: 'Zero duplicate scans and clean reconciliation.',
+            highlights: 'Smooth hardware gate workflow.',
+            challenges: 'None reported',
+            feedbackObservations: 'Well received.',
+            actualAttendance: 1,
+            registeredTotal: 1,
+            completionStatus: 'completed',
+            status: 'submitted',
+          }),
+        );
+        expect(report.status).toBe('submitted');
+
+        const reviewed = await dbRequestContext.run({userId: '', globalRole: 'super_admin'}, () =>
+          adapter.reviewEventReport(
+            report.id,
+            {id: leader.id, name: 'Test Reviewer'},
+            {status: 'approved', reviewNotes: 'Verified live Postgres persistence'},
+          ),
+        );
+        expect(reviewed.status).toBe('approved');
+        expect(reviewed.history?.length ?? 0).toBeGreaterThanOrEqual(2);
       },
       30000,
     );

@@ -1,16 +1,48 @@
 import type {
   EventFormVersion,
+  EventItem,
   FormField,
   RegistrationForm,
 } from '../../../shared/types/domain.ts';
 import type {DataAdapter} from '../../adapters/DataAdapter.ts';
-import {NotFoundError, ValidationError} from '../../shared/errors/AppError.ts';
+import {BusinessRuleError, NotFoundError, ValidationError} from '../../shared/errors/AppError.ts';
 
 export class FormsService {
   constructor(private readonly adapter: DataAdapter) {}
 
+  async getEventById(eventId: string): Promise<EventItem | null> {
+    return this.adapter.getEventById(eventId);
+  }
+
   async getForm(eventId: string): Promise<RegistrationForm> {
     return this.adapter.getRegistrationForm(eventId);
+  }
+
+  async getLatestPublishedForm(eventId: string): Promise<RegistrationForm> {
+    if (!this.adapter.getPublishedFormVersion) {
+      throw new BusinessRuleError(
+        'FORM_NOT_PUBLISHED',
+        'Published form snapshots are not available',
+      );
+    }
+    const snapshot = await this.adapter.getPublishedFormVersion(eventId);
+    if (!snapshot) {
+      throw new BusinessRuleError(
+        'FORM_NOT_PUBLISHED',
+        'Registration form has not been published yet',
+      );
+    }
+    return {
+      id: snapshot.formId,
+      eventId: snapshot.eventId,
+      version: snapshot.version,
+      status: 'published',
+      publishedVersion: snapshot.version,
+      title: snapshot.title,
+      description: snapshot.description,
+      fields: snapshot.fields,
+      updatedAt: snapshot.publishedAt,
+    };
   }
 
   async getPublishedVersion(eventId: string, version: number): Promise<EventFormVersion> {

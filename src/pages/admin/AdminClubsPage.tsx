@@ -4,6 +4,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query';
 import {
   Building2,
   Edit3,
+  Instagram,
   MailPlus,
   RefreshCw,
   Search,
@@ -26,7 +27,7 @@ import {createClubSchema, updateClubSchema} from '../../../shared/schemas/valida
 import type {Club, ClubMembership, ClubRole, ClubStatus} from '../../../shared/types/domain.ts';
 import {apiClient} from '../../adapters/ApiDataAdapter.ts';
 import {Button} from '../../components/ui/Button.tsx';
-import {ClubLogo, LoadingSkeleton, Modal, StatusLabel} from '../../components/ui/Feedback.tsx';
+import {ClubLogo, LoadingSkeleton, Modal, SafeExternalLink, StatusLabel} from '../../components/ui/Feedback.tsx';
 import {Card, Input, Select, Textarea} from '../../components/ui/FormControls.tsx';
 import {useAuth} from '../../context/AuthContext.tsx';
 import {useToast} from '../../context/ToastContext.tsx';
@@ -65,6 +66,15 @@ export const AdminClubsPage: React.FC = () => {
     queryFn: () => apiClient.listAdminClubs(),
   });
 
+  const {data: analytics} = useQuery({
+    queryKey: ['admin-analytics'],
+    queryFn: () => apiClient.getAdminAnalytics(),
+  });
+
+  const clubOverviewMap = new Map(
+    (analytics?.clubs || []).map((item) => [item.club.id, item]),
+  );
+
   const {data: managingTeam = [], isLoading: teamLoading} = useQuery({
     queryKey: ['club-team', managingClub?.id],
     queryFn: () => apiClient.getClubTeam(managingClub!.id),
@@ -102,6 +112,7 @@ export const AdminClubsPage: React.FC = () => {
           description: editingClub.description,
           meetingSchedule: editingClub.meetingSchedule,
           contactEmail: editingClub.contactEmail,
+          instagramUrl: editingClub.instagramUrl || '',
         }
       : undefined,
   });
@@ -109,6 +120,7 @@ export const AdminClubsPage: React.FC = () => {
   const invalidateClubCaches = async (clubId?: string) => {
     await Promise.all([
       queryClient.invalidateQueries({queryKey: ['admin-clubs']}),
+      queryClient.invalidateQueries({queryKey: ['admin-analytics']}),
       queryClient.invalidateQueries({queryKey: ['admin-dashboard']}),
       queryClient.invalidateQueries({queryKey: ['admin-audit-logs']}),
       queryClient.invalidateQueries({queryKey: ['clubs']}),
@@ -352,17 +364,19 @@ export const AdminClubsPage: React.FC = () => {
             <table className="w-full text-left text-sm">
               <thead className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500">
                 <tr>
-                  <th className="px-6 py-3">Club</th>
-                  <th className="px-6 py-3">Category</th>
-                  <th className="px-6 py-3 text-right">Followers</th>
-                  <th className="px-6 py-3">Status</th>
-                  <th className="px-6 py-3 text-right">Actions</th>
+                  <th className="px-5 py-3">Club</th>
+                  <th className="px-5 py-3">Leadership &amp; Team</th>
+                  <th className="px-5 py-3 text-right">Followers / Events</th>
+                  <th className="px-5 py-3">Status</th>
+                  <th className="px-5 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filtered.map((club) => (
+                {filtered.map((club) => {
+                  const overview = clubOverviewMap.get(club.id);
+                  return (
                   <tr key={club.id} className="hover:bg-slate-50/70">
-                    <td className="px-6 py-3.5">
+                    <td className="px-5 py-3.5">
                       <div className="flex items-center gap-3">
                         <ClubLogo name={club.name} logoUrl={club.logoUrl} size="sm" />
                         <div>
@@ -373,20 +387,44 @@ export const AdminClubsPage: React.FC = () => {
                           >
                             {club.name}
                           </button>
-                          <p className="text-xs text-slate-500">
-                            <span className="font-mono">{club.slug}</span> · {club.contactEmail}
-                          </p>
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                            <span className="font-mono">{club.slug}</span>
+                            <span>· {club.category}</span>
+                            {club.instagramUrl && (
+                              <SafeExternalLink
+                                href={club.instagramUrl}
+                                className="inline-flex items-center gap-1 font-medium text-pink-700 hover:underline"
+                              >
+                                <Instagram className="h-3 w-3" />
+                                Instagram
+                              </SafeExternalLink>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </td>
-                    <td className="px-6 py-3.5 text-xs text-slate-600">{club.category}</td>
-                    <td className="px-6 py-3.5 text-right font-mono text-xs font-semibold text-slate-900 tabular-nums">
-                      {club.followerCount}
+                    <td className="px-5 py-3.5 text-xs text-slate-600">
+                      <p>
+                        <span className="font-medium text-slate-800">Pres:</span>{' '}
+                        {overview?.presidentName || 'Vacant'}
+                      </p>
+                      <p className="mt-0.5">
+                        <span className="font-medium text-slate-800">VP:</span>{' '}
+                        {overview?.vicePresidentName || 'Vacant'} ·{' '}
+                        <span className="font-mono">{overview?.activeCoreCount ?? 0} core</span>
+                      </p>
                     </td>
-                    <td className="px-6 py-3.5">
+                    <td className="px-5 py-3.5 text-right font-mono text-xs text-slate-900 tabular-nums">
+                      <div>{club.followerCount} followers</div>
+                      <div className="text-slate-500">
+                        {overview?.upcomingEventsCount ?? club.upcomingEventsCount} up ·{' '}
+                        {overview?.completedEventsCount ?? 0} done
+                      </div>
+                    </td>
+                    <td className="px-5 py-3.5">
                       <StatusLabel status={club.status} />
                     </td>
-                    <td className="px-6 py-3.5 text-right">
+                    <td className="px-5 py-3.5 text-right">
                       <div className="inline-flex flex-wrap items-center justify-end gap-2">
                         <Button
                           size="sm"
@@ -437,7 +475,8 @@ export const AdminClubsPage: React.FC = () => {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -516,6 +555,12 @@ export const AdminClubsPage: React.FC = () => {
               label="Meeting Schedule"
               error={editErrors.meetingSchedule?.message}
               {...registerEdit('meetingSchedule')}
+            />
+            <Input
+              label="Instagram Profile (URL or @handle)"
+              placeholder="https://www.instagram.com/clubhandle/"
+              error={editErrors.instagramUrl?.message}
+              {...registerEdit('instagramUrl')}
             />
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => setEditingClub(null)}>
@@ -858,6 +903,12 @@ export const AdminClubsPage: React.FC = () => {
             label="Meeting Schedule"
             error={errors.meetingSchedule?.message}
             {...register('meetingSchedule')}
+          />
+          <Input
+            label="Instagram Profile (optional URL or @handle)"
+            placeholder="https://www.instagram.com/clubhandle/"
+            error={errors.instagramUrl?.message}
+            {...register('instagramUrl')}
           />
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setCreateOpen(false)}>

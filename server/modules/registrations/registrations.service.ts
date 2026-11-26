@@ -8,7 +8,7 @@ import type {
 import type {DataAdapter} from '../../adapters/DataAdapter.ts';
 import {env} from '../../config/env.ts';
 import {BusinessRuleError, NotFoundError} from '../../shared/errors/AppError.ts';
-import {escapeCsvCell, generateOpaqueQrToken} from '../../shared/utils/crypto.ts';
+import {escapeCsvCell} from '../../shared/utils/crypto.ts';
 import {
   validateFormSubmissionAnswers,
   validateStudentEligibility,
@@ -51,23 +51,24 @@ export class RegistrationsService {
     const publishedVersion = this.adapter.getPublishedFormVersion
       ? await this.adapter.getPublishedFormVersion(eventId)
       : null;
-    const activeForm = publishedVersion
-      ? null
-      : await this.adapter.getRegistrationForm(eventId);
-    const fields = publishedVersion ? publishedVersion.fields : activeForm!.fields;
+    if (!publishedVersion) {
+      throw new BusinessRuleError(
+        'FORM_NOT_PUBLISHED',
+        'Registration form has not been published yet',
+      );
+    }
 
-    const sanitizedAnswers = validateFormSubmissionAnswers(fields, answers);
+    const sanitizedAnswers = validateFormSubmissionAnswers(publishedVersion.fields, answers);
 
-    const qrToken = generateOpaqueQrToken();
     const registration = await this.adapter.createRegistration({
       eventId,
       studentId: student.id,
       studentName: student.name,
       studentEmail: student.email,
       answers: sanitizedAnswers,
-      qrToken,
-      formVersion: publishedVersion?.version ?? activeForm?.version ?? 1,
-      formVersionId: publishedVersion?.id ?? null,
+      qrToken: '',
+      formVersion: publishedVersion.version,
+      formVersionId: publishedVersion.id,
     });
 
     const isWaitlisted = registration.status === 'waitlisted';
@@ -78,7 +79,7 @@ export class RegistrationsService {
         : `Registration Confirmed: ${registration.eventTitle}`,
       message: isWaitlisted
         ? `Event capacity is currently full. You are #${registration.waitlistPosition ?? 1} on the automatic FIFO waitlist.`
-        : `Your non-PII entry pass ${qrToken} is ready in My Registrations.`,
+        : 'Your registration is confirmed. Your ticket will be available once the club releases tickets.',
       category: 'registration',
       link: '/app/student/registrations',
     });
@@ -114,7 +115,7 @@ export class RegistrationsService {
       await this.adapter.createNotification({
         userId: result.promotedUserId,
         title: `Waitlist Promoted: ${result.cancelled.eventTitle}`,
-        message: `A confirmed seat opened up and you have been promoted from the waitlist for ${result.cancelled.eventTitle}. Your QR pass is now active!`,
+        message: `A confirmed seat opened up and you have been promoted from the waitlist for ${result.cancelled.eventTitle}. Your ticket will be available once the club releases tickets.`,
         category: 'registration',
         link: '/app/student/registrations',
       });
